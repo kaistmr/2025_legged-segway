@@ -1,3 +1,6 @@
+//아직 1중이고, 아두이노에 대한 코드로 되어있으니 주의할 것
+//2중 PID를 만들 때는 teensy 4.0에 맞는 핀 설정을 줄 것임 -> 시험할 때는 아두이노가 갔다쓰기 편해서 내린 결정
+
 #include <PID_v1_bc.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
@@ -20,7 +23,7 @@ void dmpDataReady() { mpuInterrupt = true; }
 // --- PID 설정 ---
 double setpoint = 180;     // 목표 각도 (평형)
 double input, output;      // 센서 입력과 PID 출력
-double Kp = 21, Ki = 140, Kd = 0.8;
+double Kp = 21, Ki = 140, Kd = 0.8; // 아무거나 넣어놓은 것
 PID pid(&input, &output, &setpoint, Kp, Ki, Kd, DIRECT);
 
 // --- CAN 구성 ---
@@ -53,7 +56,7 @@ void stopMotor() {
   sendSpeed(0); // 정지
 }
 
-// --- 아두이노 초기 설정 ---
+// --- 초기 설정 ---
 void setup() {
   Serial.begin(115200);
 
