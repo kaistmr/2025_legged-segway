@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <FlexCAN_T4.h>
 #include "config.h"
 #include "motor_control.h"
@@ -64,6 +65,8 @@ const  uint32_t DT_PRINT = 200;  // 5 Hz print (optional)
 static float    g_joint_deg[2] = {NAN, NAN};
 static uint32_t g_joint_ts [2] = {0, 0};    // millis() timestamp when snapshot updated
 
+static float INIT_H_DEG = 170;
+static float H_DEG = 150;
 
 
 // Manual serial command parser (non-blocking)
@@ -231,11 +234,29 @@ void setup() {
   // Power on all motors
   MotorStopAll();
   delay(3000);
+  {
+    float tmp; bool a = false, b = false;
+    for(auto m : JOINTS) m->request94();
+    delay(100);
+    status::poll();
+    if(J1.angle94(&tmp)) { g_joint_deg[0] = tmp; a = true; }
+    if(J2.angle94(&tmp)) { g_joint_deg[1] = tmp; b = true; }
+    if(a&&b) {
+      uint8_t dir1, dir2;
+      dirplan::chooseJ1(g_joint_deg[0], INIT_H_DEG, &dir1);
+      dirplan::chooseJ2(g_joint_deg[1], INIT_H_DEG, &dir2);
+      J1.posSingleDegMax(dir1, mapJ1::toMotorDegClamp(INIT_H_DEG), 400);
+      J2.posSingleDegMax(dir2, mapJ2::toMotorDegClamp(INIT_H_DEG), 400);
+      // J1.posSingleDeg(dir1, mapJ1::toMotorDegClamp(INIT_H_DEG));
+      // J2.posSingleDeg(dir2, mapJ2::toMotorDegClamp(INIT_H_DEG));
+      delay(2000);
+      J1.posSingleDeg(dir1, mapJ1::toMotorDegClamp(INIT_H_DEG));
+      J2.posSingleDeg(dir2, mapJ2::toMotorDegClamp(INIT_H_DEG));
+    }
+  }
 
-  // J1.posSingleDeg(CW, 0);
-  // J2.posSingleDeg(CW, 0);
-  J1.posSingleDegMax(CW, 0, 100);
-  J2.posSingleDegMax(CW, 0, 100);
+  // W1.speedDps(200); => forward
+  // W2.speedDps(200); => backward
 
   digitalWrite(LED_R, LOW);
   digitalWrite(LED_G, LOW);
@@ -247,7 +268,7 @@ void setup() {
 
 //#define MOTOR_CONTROL
 
-//#define PRINT_SAVEDARRAY
+#define PRINT_SAVEDARRAY
 
 //#define PRINT_ANGLE94
 
@@ -292,18 +313,17 @@ void loop() {
     if (now - t_req94 >= DT_REQ94) {
       t_req94 += DT_REQ94;                 // drift‑free scheduling
       // Request 0x94 from both joints each control cadence
-      J1.request94();
-      J2.request94();
+      for(auto m : JOINTS) m->request94();
     }
 
     // Optional prints
     if (now - t_print >= DT_PRINT) {
       t_print += DT_PRINT;
+
       #ifdef PRINT_SAVEDARRAY
       {
         const uint32_t STALE_MS = 100; // consider stale if older than this
         float u;
-
         // J1
         if ((uint32_t)(now - g_joint_ts[0]) <= STALE_MS) {
           mapJ1::toUserDegClamp(g_joint_deg[0], &u);
@@ -315,7 +335,7 @@ void loop() {
         // J2
         if ((uint32_t)(now - g_joint_ts[1]) <= STALE_MS) {
           mapJ2::toUserDegClamp(g_joint_deg[1], &u);
-          Serial.printf("[J2] angle94 = %.2f deg  =>  %.2f\n\n", g_joint_deg[1], u);
+          Serial.printf("[J2] angle94 = %.2f deg  =>  %.2f\n", g_joint_deg[1], u);
         } else {
           Serial.printf("[J2] angle94 = NaN deg  =>  NaN  (stale %lu ms)\n\n", (unsigned long)(now - g_joint_ts[1]));
         }

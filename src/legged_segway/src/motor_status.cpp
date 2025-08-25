@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include "motor_status.h"
 #include <FlexCAN_T4.h>
 #include "config.h"

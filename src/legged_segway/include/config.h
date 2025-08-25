@@ -1,8 +1,9 @@
 #pragma once
+#include <Arduino.h>
 #include <cstdint>
 
 // Direction of rotation
-//enum Direction : uint8_t { CW = 0, CCW = 1 };
+enum Direction : uint8_t { CW = 0, CCW = 1 };
 
 
 // Motor IDs for the CAN bus
@@ -49,8 +50,8 @@ namespace anglemap_detail {
 
 // ── J1: START=288°, SPAN=300° ──
 namespace mapJ1 {
-  constexpr float START_DEG = 265.0f;
-  constexpr float SPAN_DEG  = 330.0f;
+  constexpr float START_DEG = 260.0f;
+  constexpr float SPAN_DEG  = 300.0f;
 
   // Strict mapping: returns false if outside [0..SPAN]
   static inline bool toUserDeg(float motor_deg, float* out) {
@@ -84,10 +85,10 @@ namespace mapJ1 {
   }
 }
 
-// ── J2: START=133°, SPAN=300° ──
+// ── J2: START=120°, SPAN=300° ──
 namespace mapJ2 {
   constexpr float START_DEG = 120.0f;
-  constexpr float SPAN_DEG  = 330.0f;
+  constexpr float SPAN_DEG  = 300.0f;
 
   static inline bool toUserDeg(float motor_deg, float* out) {
     float u = anglemap_detail::rawUser(motor_deg, START_DEG);
@@ -133,39 +134,33 @@ namespace mapJ2 {
 //      *out_target_motor : motor absolute angle (0..360°) to send to 0xA5/0xA6
 // ───────────────────────────────
 namespace dirplan {
-  constexpr uint8_t CW  = 0;
-  constexpr uint8_t CCW = 1;
+  constexpr uint8_t CW  = 0;  // stand up
+  constexpr uint8_t CCW = 1;  // sit down
 
   // ---- J1 (uses mapJ1::START_DEG, SPAN_DEG=300) ----
   static inline bool chooseJ1(float current_motor_deg,
                               float target_user_deg,
-                              uint8_t* out_dir,
-                              float* out_target_motor_deg)
+                              uint8_t* out_dir)
   {
     // 1) 현재 모터각 → 사용자각(0..SPAN)로 변환 (금지구간이면 경계로 클램프)
     float cur_user;
+
     mapJ1::toUserDegClamp(current_motor_deg, &cur_user);
 
-    // 2) 목표 사용자각을 [0..SPAN]으로 클램프
     if (target_user_deg < 0.0f)            target_user_deg = 0.0f;
     else if (target_user_deg > mapJ1::SPAN_DEG) target_user_deg = mapJ1::SPAN_DEG;
 
-    // 3) Direction by simple compare in user space: cur < target → CCW, else → CW
-    uint8_t dir  = (cur_user < target_user_deg) ? CCW : CW;  // equal: CW (doesn't matter if no move)
+    // 3) Direction by simple compare in user space: cur < target → CW, else → CCW
+    uint8_t dir  = (cur_user < target_user_deg) ? CW : CCW;  // equal: CW (doesn't matter if no move)
 
-    // 4) 사용자 목표각 → 모터 절대각(0..360)으로 변환
-    float tgt_motor = mapJ1::toMotorDegClamp(target_user_deg);
-
-    if (out_dir)             *out_dir = dir;
-    if (out_target_motor_deg)*out_target_motor_deg = tgt_motor;
+    if (out_dir) *out_dir = dir;
     return true;
   }
 
   // ---- J2 (uses mapJ2::START_DEG, SPAN_DEG=300) ----
   static inline bool chooseJ2(float current_motor_deg,
                               float target_user_deg,
-                              uint8_t* out_dir,
-                              float* out_target_motor_deg)
+                              uint8_t* out_dir)
   {
     float cur_user;
     mapJ2::toUserDegClamp(current_motor_deg, &cur_user);
@@ -173,12 +168,9 @@ namespace dirplan {
     if (target_user_deg < 0.0f)            target_user_deg = 0.0f;
     else if (target_user_deg > mapJ2::SPAN_DEG) target_user_deg = mapJ2::SPAN_DEG;
 
-    uint8_t dir  = (cur_user < target_user_deg) ? CCW : CW;  // equal: CW
+    uint8_t dir  = (cur_user < target_user_deg) ? CW : CCW;  
 
-    float tgt_motor = mapJ2::toMotorDegClamp(target_user_deg);
-
-    if (out_dir)             *out_dir = dir;
-    if (out_target_motor_deg)*out_target_motor_deg = tgt_motor;
+    if (out_dir) *out_dir = dir;
     return true;
   }
 } // namespace dirplan

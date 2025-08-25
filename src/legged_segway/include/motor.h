@@ -1,4 +1,6 @@
 #pragma once
+
+#include <Arduino.h>
 #include "motor_control.h" // A1~A8: send torque/speed/position commands
 #include "motor_status.h"  // poll(), 0x9A/9B/9C, cached state/health access
 #include <cstdint>
