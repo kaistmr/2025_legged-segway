@@ -168,7 +168,7 @@ namespace dirplan {
     if (target_user_deg < 0.0f)            target_user_deg = 0.0f;
     else if (target_user_deg > mapJ2::SPAN_DEG) target_user_deg = mapJ2::SPAN_DEG;
 
-    uint8_t dir  = (cur_user < target_user_deg) ? CW : CCW;  
+    uint8_t dir  = (cur_user < target_user_deg) ? CW : CCW;
 
     if (out_dir) *out_dir = dir;
     return true;

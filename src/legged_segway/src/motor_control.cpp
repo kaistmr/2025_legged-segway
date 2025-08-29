@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <FlexCAN_T4.h>
-#include <cmath>            // lroundf, llround
+#include <cmath>
 #include <cstdint>
 #include "motor_control.h"
 #include "config.h"

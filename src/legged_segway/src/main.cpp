@@ -4,7 +4,20 @@
 #include "motor_control.h"
 #include "motor_status.h"
 #include "motor.h"
+#include "imu_mpu6050.h"
 
+ImuMpu6050 IMU;
+constexpr int IMU_INT_PIN = 2;
+void imuISR() { IMU.isr(); }
+
+float Kp = 1;
+float Ki = 0;
+float Kd = 0;
+float g_i_accum = 0.0f;                 // PID I-term state (rad*s)
+float g_theta_ref = 0.0f;               // 목표 자세 (rad). 기본: 직립 0rad
+float g_dtheta_ref_rad_s = 0.0f;        // 목표 각속도 (rad/s). 기본: 0
+constexpr float U_MAX_DPS = 2000.0f;     // 모터 속도 제한값 (deg/s)
+constexpr float E_DEADBAND_RAD = 0.003f; // ~0.17 deg: 작은 오차 무시 (데드밴드)
 
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can1;
 
@@ -57,7 +70,7 @@ static uint32_t t_print  = 0;   // optional serial print
 
 const  uint32_t DT_CTRL  = 10;   // 100 Hz control
 const  uint32_t DT_9A    = 100;  // 10 Hz -> ~2.5 Hz/motor via round-robin (4 motors)
-const  uint32_t DT_REQ94 = DT_CTRL;   // request 0x94 at control cadence (e.g., 100 Hz)
+const  uint32_t DT_REQ94 = 15;   // request 0x94 at control cadence (e.g., 100 Hz)
 
 const  uint32_t DT_PRINT = 200;  // 5 Hz print (optional)
 
@@ -128,6 +141,7 @@ static inline void processSerialCommands() {
           g_latched_err[i] = 0;
           //status::sendClear9B(ROLE_IDS[i]);
         }
+        g_i_accum = 0.0f;  // reset integral on resume
         Serial.println("[CMD] Resume RUN (latched state cleared)");
         // Optionally re-request health snapshot after resume:
         // Request9AAll();
@@ -204,6 +218,7 @@ static inline void checkHealthAndLatch() {
         Serial.println("Entering SAFE_HALT");
         MotorStopAll();
         g_mode = Mode::SAFE_HALT;
+        g_i_accum = 0.0f; // reset integral on safety halt
         latchedThisTick = true;
       }
     }
@@ -221,6 +236,15 @@ void setup() {
   pinMode(LED_R, OUTPUT);
   pinMode(LED_Y, OUTPUT);
   pinMode(LED_G, OUTPUT);
+
+  // IMU initialization
+  if (!IMU.begin(IMU_INT_PIN, 40, 144, -3, 2270)) {  //! plugin offset values!!
+    Serial.println("[IMU] begin failed");
+    while (1) { digitalWrite(LED_Y, HIGH); delay(100); digitalWrite(LED_Y, LOW); delay(100);}   // 초기화 실패 시 멈춤(원하면 제거)
+  }
+  attachInterrupt(digitalPinToInterrupt(IMU_INT_PIN), imuISR, RISING);
+  IMU.printDiag();
+
 
   // Encoder resolution: set to match your motor (14 / 15 / 18)
   status::setEncoderBits(18);
@@ -255,9 +279,6 @@ void setup() {
     }
   }
 
-  // W1.speedDps(200); => forward
-  // W2.speedDps(200); => backward
-
   digitalWrite(LED_R, LOW);
   digitalWrite(LED_G, LOW);
   digitalWrite(LED_Y, LOW);
@@ -272,20 +293,22 @@ void setup() {
 
 //#define PRINT_ANGLE94
 
+#define TEST_MODE
+
 
 void loop() {
-  // Always first: parse incoming frames (non-blocking)
   status::poll();
+  IMU.service();
   const uint32_t now = millis();
 
-  // Snapshot latest 0x94 joint angles (keep previous if nothing new this tick)
+
   {
     float tmp;
     if (J1.angle94(&tmp)) { g_joint_deg[0] = tmp; g_joint_ts[0] = now; }
     if (J2.angle94(&tmp)) { g_joint_deg[1] = tmp; g_joint_ts[1] = now; }
   }
 
-  // ===== Control loop only when RUN =====
+
   if (g_mode == Mode::RUN) {
     digitalWrite(LED_R, LOW);
     digitalWrite(LED_G, HIGH);
@@ -293,6 +316,42 @@ void loop() {
 
     if (now - t_ctrl >= DT_CTRL) {
       t_ctrl += DT_CTRL;
+
+      ImuSample s;
+      if (IMU.readLatest(&s)) {
+
+        float pitch_rad   = s.pitch_rad;     // DMP (ypr[1])
+        float gyroY_rad_s = s.gyroY_rad_s;   // RAW (레지스터)
+
+        // 디버그 출력
+        // Serial.printf("pitch=%.2f deg\tgyroY=%.2f deg/s\n", s.pitch_deg, s.gyroY_deg_s);
+
+        //! PID calculation
+        const float dt_s = DT_CTRL * 0.001f;          // 10 ms -> 0.01 s
+        float e    = g_theta_ref - pitch_rad;   // 목표 자세 (rad)
+        if (fabsf(e) < E_DEADBAND_RAD) e = 0.0f;
+
+        float u_unsat = Kp * e + Ki * g_i_accum + Kd * (g_dtheta_ref_rad_s - gyroY_rad_s);
+        float u_cmd   = constrain(u_unsat, -U_MAX_DPS, U_MAX_DPS);
+
+        const bool sat_hi = (u_unsat >  U_MAX_DPS);
+        const bool sat_lo = (u_unsat < -U_MAX_DPS);
+        const bool clamp  = ((sat_hi && e > 0.0f) || (sat_lo && e < 0.0f));
+
+        if (!clamp) {
+          g_i_accum += e * dt_s;
+          u_unsat = Kp * e + Ki * g_i_accum + Kd * (g_dtheta_ref_rad_s - gyroY_rad_s);
+          u_cmd   = constrain(u_unsat, -U_MAX_DPS, U_MAX_DPS);
+        }
+        digitalWrite(LED_Y, clamp ? HIGH : LOW);
+
+        // Serial.printf("e=%.4f rad, u_cmd=%.1f deg/s\n", e, u_cmd);
+        // 실제 적용(안전 상 주석 처리). W2의 부호가 반대라면 아래처럼 반전하여 사용
+        // W1.speedDps(u_cmd);
+        // W2.speedDps(-u_cmd);
+      }
+
+
 
       #ifdef MOTOR_CONTROL
 //      J1.torqueAmp(2.0f);
@@ -322,7 +381,7 @@ void loop() {
 
       #ifdef PRINT_SAVEDARRAY
       {
-        const uint32_t STALE_MS = 100; // consider stale if older than this
+        const uint32_t STALE_MS = 100;
         float u;
         // J1
         if ((uint32_t)(now - g_joint_ts[0]) <= STALE_MS) {
@@ -365,7 +424,7 @@ void loop() {
   }
   // In SAFE_HALT: no control commands are sent (only poll, 0x9A polling, serial, LED blink)
 
-  // Periodic 0x9A safety polling (keeps running in both RUN/SAFE)
+
   if (now - t_9a >= DT_9A) {
     t_9a += DT_9A;
     static size_t rr = 0; // round-robin index 0..ROLE_COUNT-1
@@ -375,16 +434,17 @@ void loop() {
     //for(auto m : ALL) m->request9A();
   }
 
-  // Latch SAFE if any motor reports error
+
+
   checkHealthAndLatch();
 
-  // Manual serial commands (non-blocking)
+  #ifdef TEST_MODE
   processSerialCommands();
+  #endif
 
-  // Visual hint when SAFE
   blinkWhenSafe(now);
 
-  
 
-  delay(1); // small breathing room
+
+  delay(1);
 }
