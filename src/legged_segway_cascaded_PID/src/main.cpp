@@ -13,19 +13,11 @@ void imuISR() { IMU.isr(); }
 float Kp = 1;
 float Ki = 0;
 float Kd = 0;
-float Kp_x = 1;
-float Ki_x = 0;
-float Kd_x = 0;
-
-float velocity = 1.0f;                   // 속도 계수
-float g_i_accum = 0.0f;                  // PID I-term state (rad*s) (아니 integration 어디감)
-float g_x_i_accum = 0.0f;                // PID I-term state (m*s)
-float g_theta_ref = 0.0f;                // 목표 자세 (rad). 기본: 직립 0rad
-float g_dtheta_ref_rad_s = 0.0f;         // 목표 각속도 (rad/s). 기본: 0
-float g_x = 0.0f;                        // 목표 변위 (m) 기본 : ㅇ
+float g_i_accum = 0.0f;                 // PID I-term state (rad*s)
+float g_theta_ref = 0.0f;               // 목표 자세 (rad). 기본: 직립 0rad
+float g_dtheta_ref_rad_s = 0.0f;        // 목표 각속도 (rad/s). 기본: 0
 constexpr float U_MAX_DPS = 2000.0f;     // 모터 속도 제한값 (deg/s)
-constexpr float E_DEADBAND_RAD = 0.003f; // ~0.17 deg: 작은 오차 무시 (각도 데드밴드)
-constexpr float E_DEADBAND_POS = 0.05f;  // 5cm 오차 무시 (변위 데드 밴드)
+constexpr float E_DEADBAND_RAD = 0.003f; // ~0.17 deg: 작은 오차 무시 (데드밴드)
 
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can1;
 
@@ -65,9 +57,9 @@ static inline const char* roleLabelById(uint8_t phys) {
 enum class Mode : uint8_t { RUN = 0, SAFE_HALT = 1 };
 static Mode g_mode = Mode::RUN;
 
-static uint32_t t_blink      = 0;                // LED blink timer
+static uint32_t t_blink      = 0;     // LED blink timer
 
-static uint8_t  g_latched_mask = 0;              // bit i set => ROLE_IDS[i] is latched SAFE
+static uint8_t  g_latched_mask = 0;             // bit i set => ROLE_IDS[i] is latched SAFE
 static uint16_t g_latched_err[ROLE_COUNT] = {0}; // per-role latched error snapshot
 
 // Timers (drift-free by += period)
@@ -76,13 +68,11 @@ static uint32_t t_9a     = 0;   // safety poll (0x9A) round-robin
 static uint32_t t_req94  = 0;   // request 0x94 periodically (only when RUN)
 static uint32_t t_print  = 0;   // optional serial print
 
-const  uint32_t DT_CTRL  = 1;   // 1000 Hz control(motor angle balance)
-const  uint32_t DT_9A    = 100; // 10 Hz -> ~2.5 Hz/motor via round-robin (4 motors)
-const  uint32_t DT_REQ94 = 15;  // request 0x94 at control cadence (e.g., 100 Hz)
+const  uint32_t DT_CTRL  = 10;   // 100 Hz control
+const  uint32_t DT_9A    = 100;  // 10 Hz -> ~2.5 Hz/motor via round-robin (4 motors)
+const  uint32_t DT_REQ94 = 15;   // request 0x94 at control cadence (e.g., 100 Hz)
 
-const uint32_t DT_CTRL_x = 10   // 100Hz control(robot position movement)
-
-const  uint32_t DT_PRINT = 200; // 5 Hz print (optional)
+const  uint32_t DT_PRINT = 200;  // 5 Hz print (optional)
 
 // Cached joint angles from 0x94 (single‑turn degrees)
 static float    g_joint_deg[2] = {NAN, NAN};
@@ -157,17 +147,7 @@ static inline void processSerialCommands() {
         // Request9AAll();
       } break;
 
-      case 'w': // go forward
-        g_x = g_x + velocity
-        Serial.println("[CMD] Go Forward")
-        break;
-
-      case 's':
-        g_x = g_x - velocity
-        Serial.println("[CMD] Go Forward")
-        break;
-
-      case 'e': // stop all
+      case 's': // stop all
         MotorStopAll();
         Serial.println("[CMD] StopAll");
         break;
@@ -346,17 +326,8 @@ void loop() {
         // 디버그 출력
         // Serial.printf("pitch=%.2f deg\tgyroY=%.2f deg/s\n", s.pitch_deg, s.gyroY_deg_s);
 
-        //! PID calculation(변위)
-
-        const float dt_s_x = DT_CTRL_x * 0.001f; // 10ms -> 0.01s
-        float p = g_x - pitch_rad * motor_diameter;
-        float v = gyroY_rad_s * motor_diameter;
-        if(fabsf(e) < E_DEADBAND_POS) e = 0.0f;
-
-        g_theta_ref = Kp_x * p + Ki_x * g_x_i_accum - Kd_x * v
-
-        //! PID calculation(각도)
-        const float dt_s = DT_CTRL * 0.001f;          // 1 ms -> 0.001 s
+        //! PID calculation
+        const float dt_s = DT_CTRL * 0.001f;          // 10 ms -> 0.01 s
         float e    = g_theta_ref - pitch_rad;   // 목표 자세 (rad)
         if (fabsf(e) < E_DEADBAND_RAD) e = 0.0f;
 
@@ -387,7 +358,7 @@ void loop() {
 //      J2.torqueAmp(2.0f);
 
        uint8_t dir, dir2;
-       float tgt_mdeg, tgt_mdeg2;
+       float   tgt_mdeg, tgt_mdeg2;
        dirplan::chooseJ1(g_joint_deg[0], 200.0f, &dir, &tgt_mdeg);
        //dirplan::chooseJ2(g_joint_deg[1], 200.0f, &dir2, &tgt_mdeg2);
 
