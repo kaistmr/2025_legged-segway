@@ -1,5 +1,12 @@
-/*
-  MPU6050 DMP6
+/* 
+  MPU6050 DMP6 ESPWiFi
+
+  The board reads quaternion data from the MPU6050 and sends Open Sound
+  Control messages.
+
+  This example requires the WiFiManager and OSCMEssage libraries available here:
+  - https://github.com/tzapu/WiFiManager
+  - https://github.com/CNMAT/OSC 
 
   Digital Motion Processor or DMP performs complex motion processing tasks.
   - Fuses the data from the accel, gyro, and external magnetometer if applied, 
@@ -9,26 +16,34 @@
   - Reduce workload on the microprocessor.
   - Output processed data such as quaternions, Euler angles, and gravity vectors.
 
-  The code includes an auto-calibration and offsets generator tasks. Different 
+  The code includes auto-calibration and offsets generator tasks. Different 
   output formats available.
 
   This code is compatible with the teapot project by using the teapot output format.
 
   Circuit: In addition to connection 3.3v, GND, SDA, and SCL, this sketch
-  depends on the MPU6050's INT pin being connected to the Arduino's
+  depends on the MPU6050's INT pin being connected to the board's
   external interrupt #0 pin.
-
-  The teapot processing example may be broken due FIFO structure change if using DMP
-  6.12 firmware version. 
     
   Find the full MPU6050 library documentation here:
   https://github.com/ElectronicCats/mpu6050/wiki
 
 */
 
+#if defined(ESP8266) 
+#include <ESP8266WiFi.h> // Include this library if using an ESP8266 based board
+#else
+#include <WiFi.h> //Otherwise use the included WiFi library
+#endif
+
+#include <DNSServer.h>
+#include <WiFiClient.h>
+#include <WiFiUdp.h>
+#include <OSCMessage.h>
+#include <WiFiManager.h>
+
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
-//#include "MPU6050_6Axis_MotionApps612.h" // Uncomment this library to work with DMP 6.12 and comment on the above library.
 
 /* MPU6050 default I2C address is 0x68*/
 MPU6050 mpu;
@@ -53,56 +68,60 @@ is not compensated for orientation. +X will always be +X according to the sensor
 - Use "OUTPUT_READABLE_WORLDACCEL" for acceleration components with gravity removed and adjusted for the world
 reference frame. Yaw is relative if there is no magnetometer present.
 
--  Use "OUTPUT_TEAPOT" for output that matches the InvenSense teapot demo. 
+-  Use "OUTPUT_TEAPOT_OSC" for output that matches the InvenSense teapot demo. 
 -------------------------------------------------------------------------------------------------------------------------------*/ 
-#define OUTPUT_READABLE_YAWPITCHROLL
+#define OUTPUT_TEAPOT_OSC
+//#define OUTPUT_READABLE_YAWPITCHROLL
 //#define OUTPUT_READABLE_QUATERNION
 //#define OUTPUT_READABLE_EULER
 //#define OUTPUT_READABLE_REALACCEL
 //#define OUTPUT_READABLE_WORLDACCEL
-//#define OUTPUT_TEAPOT
 
-int const INTERRUPT_PIN = 2;  // Define the interruption #0 pin
-bool blinkState;
+#ifdef OUTPUT_READABLE_EULER
+float euler[3];         // [psi, theta, phi]    Euler angle container
+#endif
+#ifdef OUTPUT_READABLE_YAWPITCHROLL
+float ypr[3];           // [yaw, pitch, roll]   Yaw/Pitch/Roll container and gravity vector
+#endif
+
+#define INTERRUPT_PIN 15 //define the INT pin on your board
 
 /*---MPU6050 Control/Status Variables---*/
 bool DMPReady = false;  // Set true if DMP init was successful
 uint8_t MPUIntStatus;   // Holds actual interrupt status byte from MPU
 uint8_t devStatus;      // Return status after each device operation (0 = success, !0 = error)
 uint16_t packetSize;    // Expected DMP packet size (default is 42 bytes)
+uint16_t FIFOCount;     // Count of all bytes currently in FIFO
 uint8_t FIFOBuffer[64]; // FIFO storage buffer
 
 /*---Orientation/Motion Variables---*/ 
 Quaternion q;           // [w, x, y, z]         Quaternion container
 VectorInt16 aa;         // [x, y, z]            Accel sensor measurements
-VectorInt16 gy;         // [x, y, z]            Gyro sensor measurements
 VectorInt16 aaReal;     // [x, y, z]            Gravity-free accel sensor measurements
 VectorInt16 aaWorld;    // [x, y, z]            World-frame accel sensor measurements
 VectorFloat gravity;    // [x, y, z]            Gravity vector
-float euler[3];         // [psi, theta, phi]    Euler angle container
-float ypr[3];           // [yaw, pitch, roll]   Yaw/Pitch/Roll container and gravity vector
 
-/*-Packet structure for InvenSense teapot demo-*/ 
-uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
+const char DEVICE_NAME[] = "mpu6050";
+
+WiFiUDP UDP;                                // A  instance to let us send and receive packets over 
+const IPAddress outIp(192, 168, 1, 11);     // Remote IP to receive OSC
+const unsigned int outPort = 9999;          // Remote port to receive OSC
 
 /*------Interrupt detection routine------*/
 volatile bool MPUInterrupt = false;     // Indicates whether MPU6050 interrupt pin has gone high
-void DMPDataReady() {
+void ICACHE_RAM_ATTR DMPDataReady() {
   MPUInterrupt = true;
 }
 
-void setup() {
-  #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-    Wire.begin();
-    Wire.setClock(400000); // 400kHz I2C clock. Comment on this line if having compilation difficulties
-  #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
-    Fastwire::setup(400, true);
-  #endif
-  
-  Serial.begin(115200); //115200 is required for Teapot Demo output
-  while (!Serial);
+void mpu_setup(){
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+  Wire.begin();
+  Wire.setClock(400000); // 400kHz I2C clock. Comment this line if having compilation difficulties
+#elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+  Fastwire::setup(400, true);
+#endif
 
-  /*Initialize device*/
+  // Initialize device
   Serial.println(F("Initializing I2C devices..."));
   mpu.initialize();
   pinMode(INTERRUPT_PIN, INPUT);
@@ -113,15 +132,9 @@ void setup() {
     Serial.println("MPU6050 connection failed");
     while(true);
   }
-  else {
+    else {
     Serial.println("MPU6050 connection successful");
   }
-
-  /*Wait for Serial input*/
-  Serial.println(F("\nSend any character to begin: "));
-  while (Serial.available() && Serial.read()); // Empty buffer
-  while (!Serial.available());                 // Wait for data
-  while (Serial.available() && Serial.read()); // Empty buffer again
 
   /* Initializate and configure the DMP*/
   Serial.println(F("Initializing DMP..."));
@@ -131,8 +144,6 @@ void setup() {
   mpu.setXGyroOffset(0);
   mpu.setYGyroOffset(0);
   mpu.setZGyroOffset(0);
-  mpu.setXAccelOffset(0);
-  mpu.setYAccelOffset(0);
   mpu.setZAccelOffset(0);
 
   /* Making sure it worked (returns 0 if so) */ 
@@ -163,27 +174,31 @@ void setup() {
     // 1 = initial memory load failed
     // 2 = DMP configuration updates failed
   }
-  pinMode(LED_BUILTIN, OUTPUT);
 }
 
-void loop() {
+void mpu_loop()
+{
   if (!DMPReady) return; // Stop the program if DMP programming fails.
-    
-  /* Read a packet from FIFO */
-  if (mpu.dmpGetCurrentFIFOPacket(FIFOBuffer)) { // Get the Latest packet 
-    #ifdef OUTPUT_READABLE_YAWPITCHROLL
-      /* Display Euler angles in degrees */
-      mpu.dmpGetQuaternion(&q, FIFOBuffer);
-      mpu.dmpGetGravity(&gravity, &q);
-      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-      Serial.print("ypr\t");
-      Serial.print(ypr[0] * 180/M_PI);
-      Serial.print("\t");
-      Serial.print(ypr[1] * 180/M_PI);
-      Serial.print("\t");
-      Serial.println(ypr[2] * 180/M_PI);
-    #endif
-        
+  if (!MPUInterrupt && FIFOCount < packetSize) return; // Wait for MPU interrupt or extra packet(s) available
+
+  /*Reset interrupt flag and get INT_STATUS byte*/
+  MPUInterrupt = false;
+  MPUIntStatus = mpu.getIntStatus();
+
+  FIFOCount = mpu.getFIFOCount();  // Get current FIFO count
+
+  /*Check for overflow (this should never happen unless our code is too inefficient)*/
+  if ((MPUIntStatus & 0x10) || FIFOCount == 1024) {
+    mpu.resetFIFO();     //Reset so we can continue cleanly
+    Serial.println(F("FIFO overflow!"));
+    //*Otherwise, check for DMP data ready interrupt (this should happen frequently)*/
+  } 
+  else if (MPUIntStatus & 0x02) {
+    while (FIFOCount < packetSize) FIFOCount = mpu.getFIFOCount();    // Wait for correct available data length, should be a VERY short wait
+    mpu.getFIFOBytes(FIFOBuffer, packetSize);    //Read a packet from FIFO
+    // track FIFO count here in case there is > 1 packet available
+    // (this lets us immediately read more without waiting for an interrupt)
+    FIFOCount -= packetSize;
     #ifdef OUTPUT_READABLE_QUATERNION
       /* Display Quaternion values in easy matrix form: [w, x, y, z] */
       mpu.dmpGetQuaternion(&q, FIFOBuffer);
@@ -197,6 +212,24 @@ void loop() {
       Serial.println(q.z);
     #endif
 
+    #ifdef OUTPUT_TEAPOT_OSC
+      #ifndef OUTPUT_READABLE_QUATERNION
+        /* Display Quaternion values in easy matrix form: [w, x, y, z] */
+        mpu.dmpGetQuaternion(&q, FIFOBuffer);
+      #endif
+      /*Send OSC message*/
+      OSCMessage msg("/imuquat");
+      msg.add((float)q.w);
+      msg.add((float)q.x);
+      msg.add((float)q.y);
+      msg.add((float)q.z);
+
+      UDP.beginPacket(outIp, outPort);
+      msg.send(UDP);
+      UDP.endPacket();
+      msg.empty();
+    #endif
+
     #ifdef OUTPUT_READABLE_EULER
       /* Display Euler angles in degrees */
       mpu.dmpGetQuaternion(&q, FIFOBuffer);
@@ -207,6 +240,19 @@ void loop() {
       Serial.print(euler[1] * 180/M_PI);
       Serial.print("\t");
       Serial.println(euler[2] * 180/M_PI);
+    #endif
+
+    #ifdef OUTPUT_READABLE_YAWPITCHROLL
+      /* Display Euler angles in degrees */
+      mpu.dmpGetQuaternion(&q, FIFOBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+      Serial.print("ypr\t");
+      Serial.print(ypr[0] * 180/M_PI);
+      Serial.print("\t");
+      Serial.print(ypr[1] * 180/M_PI);
+      Serial.print("\t");
+      Serial.println(ypr[2] * 180/M_PI);
     #endif
 
     #ifdef OUTPUT_READABLE_REALACCEL
@@ -238,23 +284,38 @@ void loop() {
       Serial.print("\t");
       Serial.println(aaWorld.z);
     #endif
-    
-    #ifdef OUTPUT_TEAPOT
-      /* Display quaternion values in InvenSense Teapot demo format */
-      teapotPacket[2] = FIFOBuffer[0];
-      teapotPacket[3] = FIFOBuffer[1];
-      teapotPacket[4] = FIFOBuffer[4];
-      teapotPacket[5] = FIFOBuffer[5];
-      teapotPacket[6] = FIFOBuffer[8];
-      teapotPacket[7] = FIFOBuffer[9];
-      teapotPacket[8] = FIFOBuffer[12];
-      teapotPacket[9] = FIFOBuffer[13];
-      Serial.write(teapotPacket, 14);
-      teapotPacket[11]++; // PacketCount, loops at 0xFF on purpose
-     #endif
-
-  /* Blink LED to indicate activity */
-  blinkState = !blinkState;
-  digitalWrite(LED_BUILTIN, blinkState);
   }
+}
+
+void setup(){
+  Serial.begin(115200); //115200 is required for Teapot Demo output
+  Serial.println(F("\nOrientation Sensor OSC output")); Serial.println();
+
+  /*WiFiManager*/
+  WiFiManager wifiManager; // Initializate WiFi Manager
+  //wifiManager.resetSettings();    //Reset saved settings
+
+  /*Fetches ssid and pass from eeprom and tries to connect
+  if it does not connect it starts an access point with the specified name
+  and goes into a blocking loop awaiting configuration*/
+  wifiManager.autoConnect(DEVICE_NAME);
+
+  Serial.print(F("WiFi connected! IP address: "));
+  Serial.println(WiFi.localIP());
+
+  mpu_setup();
+}
+
+void loop(){
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println();
+    Serial.println("*** Disconnected from AP, rebooting ***");
+    Serial.println();
+    #if defined(ESP8266)
+    ESP.reset();
+    #else
+    ESP.restart();
+    #endif
+  }
+  mpu_loop();
 }
