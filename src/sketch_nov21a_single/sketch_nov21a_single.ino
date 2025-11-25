@@ -83,8 +83,13 @@ enum MotionCmd {
 };
 
 volatile MotionCmd motionCmd = MOTION_STOP;  // 기본은 정지(S)
+volatile MotionCmd prevMotionCmd = MOTION_STOP;  // 이전 명령 추적
 
 unsigned long lastCmdMs = 0;  // 마지막 명령 시간 (블루투스/시리얼 통합)
+
+// PID 상태 변수 (전역 선언 - 명령 처리에서 사용)
+float err_integral = 0.0f;
+float last_error   = 0.0f;
 
 // -------------------- 통합 명령 처리 (블루투스 + 시리얼) --------------------
 
@@ -100,23 +105,33 @@ void processCommand(char c, bool fromSerial) {
     if (fromSerial) Serial.println(F("[D] Hip servos -> folded pose"));
   }
   else if (c == 'F' || c == 'f') {
+    prevMotionCmd = motionCmd;
     motionCmd = MOTION_FWD;
     if (fromSerial) Serial.println(F("[F] Forward"));
   }
   else if (c == 'B' || c == 'b') {
+    prevMotionCmd = motionCmd;
     motionCmd = MOTION_BACK;
     if (fromSerial) Serial.println(F("[B] Backward"));
   }
   else if (c == 'L' || c == 'l') {
+    prevMotionCmd = motionCmd;
     motionCmd = MOTION_LEFT;
     if (fromSerial) Serial.println(F("[L] Turn left"));
   }
   else if (c == 'R' || c == 'r') {
     // R/r: 우회전
+    prevMotionCmd = motionCmd;
     motionCmd = MOTION_RIGHT;
     if (fromSerial) Serial.println(F("[R] Turn right"));
   }
   else if (c == 'S' || c == 's') {
+    // 회전 명령에서 STOP으로 바뀔 때 PID 리셋
+    if (prevMotionCmd == MOTION_LEFT || prevMotionCmd == MOTION_RIGHT) {
+      err_integral = 0.0f;
+      last_error = 0.0f;
+    }
+    prevMotionCmd = motionCmd;
     motionCmd = MOTION_STOP;
     if (fromSerial) Serial.println(F("[S] Stop"));
   }
@@ -141,9 +156,15 @@ void pollAllCommands() {
 }
 
 void safetyUpdateFromTimeout() {
-  const unsigned long TIMEOUT_MS = 800; // 0.8초 동안 명령 없으면 정지
+  const unsigned long TIMEOUT_MS = 400; // 0.4초 동안 명령 없으면 정지
 
   if (lastCmdMs != 0 && millis() - lastCmdMs > TIMEOUT_MS) {
+    // 회전 명령에서 타임아웃으로 STOP으로 바뀔 때 PID 리셋
+    if (motionCmd == MOTION_LEFT || motionCmd == MOTION_RIGHT) {
+      err_integral = 0.0f;
+      last_error = 0.0f;
+    }
+    prevMotionCmd = motionCmd;
     motionCmd = MOTION_STOP;
   }
 }
@@ -184,7 +205,7 @@ void updateImuDmp() {
 // -------------------- Balance Controller (단일 PID) --------------------
 
 // PID on pitch angle (deg)
-const float ZIG_ORIGIN_OFFSET_DEG = -1.06f;   // bias relative to DMP zero (tune)
+const float ZIG_ORIGIN_OFFSET_DEG = -1.29f;   // bias relative to DMP zero (tune)
 float       zigOriginAngleDeg     = ZIG_ORIGIN_OFFSET_DEG;
 const float PITCH_SIGN            = -1.0f;   // 센서 방향 반전하면 여기 바꾸기
 
@@ -202,9 +223,6 @@ const float I_LIMIT = 50.0f;
 // Control timing (Hz)
 const uint32_t CONTROL_PERIOD_US = 5000;  // 5 ms -> 200 Hz
 
-float err_integral = 0.0f;
-float last_error   = 0.0f;
-
 void disableBalanceControlOutputs() {
   err_integral = 0.0f;
   last_error   = 0.0f;
@@ -215,9 +233,8 @@ void disableBalanceControlOutputs() {
 // -------------------- Motion Offsets (이동, 회전) --------------------
 // 이동은 단순히 목표 pitch를 약간 앞/뒤로 기울이는 방식으로만 구현
 void computeMotionOffsets(float &pitchOffsetDeg, int16_t &turnIqOffset) {
-  const float   FWD_TILT_DEG  = -3.0f;   // 전진용 추가 기울기
-  const float   BACK_TILT_DEG = 3.0f;  // 후진용 추가 기울기
-  const int16_t TURN_IQ       = 60;     // 제자리 회전용 바퀴 토크 차이
+  const float   TILT_DEG  = -2.5f;   // 전진용 추가 기울기
+  const int16_t TURN_IQ       = 30;     // 제자리 회전용 바퀴 토크 차이
 
   pitchOffsetDeg = 0.0f;
   turnIqOffset   = 0;
@@ -228,19 +245,19 @@ void computeMotionOffsets(float &pitchOffsetDeg, int16_t &turnIqOffset) {
       turnIqOffset   = 0;
       break;
     case MOTION_FWD:
-      pitchOffsetDeg = FWD_TILT_DEG;
+      pitchOffsetDeg = TILT_DEG;
       turnIqOffset   = 0;
       break;
     case MOTION_BACK:
-      pitchOffsetDeg = BACK_TILT_DEG;
+      pitchOffsetDeg = -1*TILT_DEG;
       turnIqOffset   = 0;
       break;
     case MOTION_LEFT:
-      pitchOffsetDeg = 0.0f;
+      pitchOffsetDeg = TILT_DEG / 2;
       turnIqOffset   = +TURN_IQ;
       break;
     case MOTION_RIGHT:
-      pitchOffsetDeg = 0.0f;
+      pitchOffsetDeg = TILT_DEG / 2;
       turnIqOffset   = -TURN_IQ;
       break;
   }
