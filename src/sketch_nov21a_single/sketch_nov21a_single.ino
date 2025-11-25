@@ -11,6 +11,11 @@
 #include "MPU6050_6Axis_MotionApps20.h"   // from ElectronicCats/mpu6050
 #include "LkMotor.h"                      // LK CAN driver
 
+enum ServoPose : uint8_t {
+  SERVO_POSE_FOLDED = 0,
+  SERVO_POSE_STAND  = 1,
+};
+
 // -------------------- CAN / Motors --------------------
 
 LkMotorBus can1;  // FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>
@@ -37,10 +42,30 @@ Servo servoJ2;  // right hip
 const int SERVO_J1_PIN = 4;  // J1
 const int SERVO_J2_PIN = 5;  // J2
 
-const int H_INIT = 60;       // base hip angle
+const int H_STAND_DEG  = 60;   // original upright pose
+const int H_FOLDED_DEG = 0;   // folded pose (tune as needed)
 
-inline int J1ang(int a) { return a + 30; }    // left: a + 20
+inline int J1ang(int a) { return a + 30; }    // left: a + offset
 inline int J2ang(int a) { return 180 - a; }   // right: 180 - a
+
+ServoPose currentServoPose = SERVO_POSE_FOLDED;
+bool balanceEnabled = false;
+
+void disableBalanceControlOutputs();
+
+void setServoPose(ServoPose pose) {
+  int baseAngle = (pose == SERVO_POSE_STAND) ? H_STAND_DEG : H_FOLDED_DEG;
+  servoJ1.write(J1ang(baseAngle));
+  servoJ2.write(J2ang(baseAngle));
+  currentServoPose = pose;
+
+  if (pose == SERVO_POSE_STAND) {
+    balanceEnabled = true;
+  } else {
+    balanceEnabled = false;
+    disableBalanceControlOutputs();
+  }
+}
 
 // -------------------- HC-06 Bluetooth module --------------------
 static const uint8_t BT_RX = 7;  // (HC-06 TXD)
@@ -59,36 +84,66 @@ enum MotionCmd {
 
 volatile MotionCmd motionCmd = MOTION_STOP;  // 기본은 정지(S)
 
-unsigned long lastBtCmdMs = 0;
+unsigned long lastCmdMs = 0;  // 마지막 명령 시간 (블루투스/시리얼 통합)
 
-// Serial에서 'f' 눌렀을 때 2초 전진용
-bool serialForwardActive = false;
-unsigned long serialForwardStartMs = 0;
+// -------------------- 통합 명령 처리 (블루투스 + 시리얼) --------------------
 
-void pollBtCommand() {
+void processCommand(char c, bool fromSerial) {
+  lastCmdMs = millis();  // 명령 시간 기록
+
+  if (c == 'U' || c == 'u') {
+    setServoPose(SERVO_POSE_STAND);
+    if (fromSerial) Serial.println(F("[U] Hip servos -> stand pose"));
+  }
+  else if (c == 'D' || c == 'd') {
+    setServoPose(SERVO_POSE_FOLDED);
+    if (fromSerial) Serial.println(F("[D] Hip servos -> folded pose"));
+  }
+  else if (c == 'F' || c == 'f') {
+    motionCmd = MOTION_FWD;
+    if (fromSerial) Serial.println(F("[F] Forward"));
+  }
+  else if (c == 'B' || c == 'b') {
+    motionCmd = MOTION_BACK;
+    if (fromSerial) Serial.println(F("[B] Backward"));
+  }
+  else if (c == 'L' || c == 'l') {
+    motionCmd = MOTION_LEFT;
+    if (fromSerial) Serial.println(F("[L] Turn left"));
+  }
+  else if (c == 'R' || c == 'r') {
+    // R/r: 우회전
+    motionCmd = MOTION_RIGHT;
+    if (fromSerial) Serial.println(F("[R] Turn right"));
+  }
+  else if (c == 'S' || c == 's') {
+    motionCmd = MOTION_STOP;
+    if (fromSerial) Serial.println(F("[S] Stop"));
+  }
+  else if (c == '0') {
+    // 0: IMU 캘리브레이션 (블루투스/시리얼 모두)
+    recalibrateImuAndResetPid();
+  }
+}
+
+void pollAllCommands() {
+  // 블루투스 명령 처리
   while (btSerial.available()) {
     char c = btSerial.read();
-    lastBtCmdMs = millis();
+    processCommand(c, false);
+  }
 
-    switch (c) {
-      case 'S': motionCmd = MOTION_STOP;  break;
-      case 'F': motionCmd = MOTION_FWD;   break;
-      case 'B': motionCmd = MOTION_BACK;  break;
-      case 'L': motionCmd = MOTION_LEFT;  break;
-      case 'R': motionCmd = MOTION_RIGHT; break;
-      default:  break; // 기타 문자는 무시
-    }
-
-    // BT로 조작 시작하면 Serial 기반 2초 전진은 취소
-    serialForwardActive = false;
+  // 시리얼 명령 처리
+  while (Serial.available()) {
+    char c = Serial.read();
+    processCommand(c, true);
   }
 }
 
 void safetyUpdateFromTimeout() {
-  const unsigned long TIMEOUT_MS = 800; // 0.8초 동안 BT 명령 없으면 정지
+  const unsigned long TIMEOUT_MS = 800; // 0.8초 동안 명령 없으면 정지
 
-  // BT를 한 번이라도 사용했을 때만 타임아웃 적용
-  if (lastBtCmdMs != 0 && millis() - lastBtCmdMs > TIMEOUT_MS) {
+  if (lastCmdMs != 0 && millis() - lastCmdMs > TIMEOUT_MS) {
     motionCmd = MOTION_STOP;
   }
 }
@@ -129,8 +184,9 @@ void updateImuDmp() {
 // -------------------- Balance Controller (단일 PID) --------------------
 
 // PID on pitch angle (deg)
-const float PITCH_TARGET_DEG = -0.0f;   // upright
-const float PITCH_SIGN       = -1.0f;   // 센서 방향 반전하면 여기 바꾸기
+const float ZIG_ORIGIN_OFFSET_DEG = -1.06f;   // bias relative to DMP zero (tune)
+float       zigOriginAngleDeg     = ZIG_ORIGIN_OFFSET_DEG;
+const float PITCH_SIGN            = -1.0f;   // 센서 방향 반전하면 여기 바꾸기
 
 // Gains (tune on hardware)
 float Kp = 40.0f;
@@ -148,6 +204,13 @@ const uint32_t CONTROL_PERIOD_US = 5000;  // 5 ms -> 200 Hz
 
 float err_integral = 0.0f;
 float last_error   = 0.0f;
+
+void disableBalanceControlOutputs() {
+  err_integral = 0.0f;
+  last_error   = 0.0f;
+  motorLeft.setTorqueIq(0);
+  motorRight.setTorqueIq(0);
+}
 
 // -------------------- Motion Offsets (이동, 회전) --------------------
 // 이동은 단순히 목표 pitch를 약간 앞/뒤로 기울이는 방식으로만 구현
@@ -184,7 +247,10 @@ void computeMotionOffsets(float &pitchOffsetDeg, int16_t &turnIqOffset) {
 }
 
 void balanceControlStep(float dt) {
-  if (!dmpReady) return;
+  if (!dmpReady || !balanceEnabled) {
+    disableBalanceControlOutputs();
+    return;
+  }
 
   float pitch = imuPitchDeg * PITCH_SIGN;
 
@@ -200,8 +266,8 @@ void balanceControlStep(float dt) {
   int16_t cmdTurnIqOffset   = 0;
   computeMotionOffsets(cmdPitchOffsetDeg, cmdTurnIqOffset);
 
-  // 최종 목표 pitch
-  float target = PITCH_TARGET_DEG + cmdPitchOffsetDeg;
+  // 최종 목표 pitch (zigOrigin 기반)
+  float target = zigOriginAngleDeg + cmdPitchOffsetDeg;
 
   // 단일 PID
   float error = target - pitch;
@@ -255,29 +321,6 @@ void recalibrateImuAndResetPid() {
   Serial.println(F("[R] IMU calibration & PID reset done"));
 }
 
-// -------------------- Serial 명령 (H: PID 리셋, f: 2초 전진) --------------------
-
-void pollSerialCommand() {
-  while (Serial.available()) {
-    char c = Serial.read();
-
-    if (c == 'H' || c == 'h') {
-      // PID 상태만 리셋 (엔코더 없음)
-      err_integral = 0.0f;
-      last_error   = 0.0f;
-      Serial.println(F("[H] PID state reset"));
-    }
-    else if (c == 'f' || c == 'F') {
-      serialForwardActive  = true;
-      serialForwardStartMs = millis();
-      motionCmd            = MOTION_FWD;
-      Serial.println(F("[f] 2s forward command started"));
-    }
-    else if (c == 'r' || c == 'R') {
-      recalibrateImuAndResetPid();
-    }
-  }
-}
 
 // -------------------- Setup --------------------
 
@@ -342,12 +385,11 @@ void setup() {
   motorLeft.motorStop();
   motorRight.motorStop();
 
-  // Hip servos fixed pose
+  // Hip servos start folded; later can command stand via serial 'U'
   servoJ1.attach(SERVO_J1_PIN);
   servoJ2.attach(SERVO_J2_PIN);
 
-  servoJ1.write(J1ang(H_INIT));   // left: 80°
-  servoJ2.write(J2ang(H_INIT));   // right: 120°
+  setServoPose(SERVO_POSE_FOLDED);
 
   err_integral = 0.0f;
   last_error   = 0.0f;
@@ -356,19 +398,8 @@ void setup() {
 // -------------------- Loop --------------------
 
 void loop() {
-  pollBtCommand();
-  pollSerialCommand();
+  pollAllCommands();
   safetyUpdateFromTimeout();
-
-  // Serial 'f' 2초 타이머
-  if (serialForwardActive) {
-    unsigned long elapsed = millis() - serialForwardStartMs;
-    if (elapsed >= 2000) {            // 2초 경과
-      serialForwardActive = false;
-      motionCmd = MOTION_STOP;
-      Serial.println(F("[f] 2s forward finished"));
-    }
-  }
 
   updateImuDmp();
 
