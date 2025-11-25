@@ -215,9 +215,9 @@ void disableBalanceControlOutputs() {
 // -------------------- Motion Offsets (이동, 회전) --------------------
 // 이동은 단순히 목표 pitch를 약간 앞/뒤로 기울이는 방식으로만 구현
 void computeMotionOffsets(float &pitchOffsetDeg, int16_t &turnIqOffset) {
-  const float   FWD_TILT_DEG  = 3.0f;   // 전진용 추가 기울기
-  const float   BACK_TILT_DEG = -3.0f;  // 후진용 추가 기울기
-  const int16_t TURN_IQ       = 80;     // 제자리 회전용 바퀴 토크 차이
+  const float   FWD_TILT_DEG  = -3.0f;   // 전진용 추가 기울기
+  const float   BACK_TILT_DEG = 3.0f;  // 후진용 추가 기울기
+  const int16_t TURN_IQ       = 60;     // 제자리 회전용 바퀴 토크 차이
 
   pitchOffsetDeg = 0.0f;
   turnIqOffset   = 0;
@@ -423,7 +423,7 @@ void loop() {
     }
   }
 
-  // Debug print
+  // Debug print (100ms 주기)
   static uint32_t lastPrintMs = 0;
   uint32_t nowMs = millis();
   if (nowMs - lastPrintMs >= 100) {
@@ -431,7 +431,9 @@ void loop() {
 
     Serial.print(F("pitch="));
     Serial.print(imuPitchDeg, 2);
-    Serial.print(F("  cmd="));
+    Serial.print(F(" deg  target="));
+    Serial.print(zigOriginAngleDeg, 2);
+    Serial.print(F(" deg  cmd="));
     switch (motionCmd) {
       case MOTION_STOP:  Serial.print("S"); break;
       case MOTION_FWD:   Serial.print("F"); break;
@@ -439,6 +441,8 @@ void loop() {
       case MOTION_LEFT:  Serial.print("L"); break;
       case MOTION_RIGHT: Serial.print("R"); break;
     }
+    Serial.print(F("  balance="));
+    Serial.print(balanceEnabled ? "ON" : "OFF");
     Serial.println();
   }
 }
