@@ -1,0 +1,20 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.example.leggedsegway.application.app-mergeReleaseResources-26:/values-v22/values-v22.xml",
+            "map": [
+                {
+                    "source": "/Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/0ce03f727a43ffe70847d3697636b564/transformed/appcompat-1.6.1/res/values-v22/values-v22.xml",
+                    "from": {
+                        "startLines": "2,3,4,9",
+                        "startColumns": "4,4,4,4",
+                        "startOffsets": "55,130,217,487",
+                        "endLines": "2,3,8,13",
+                        "endColumns": "74,86,12,12",
+                        "endOffsets": "125,212,482,764"
+                    }
+                }
+            ]
+        }
+    ]
+}

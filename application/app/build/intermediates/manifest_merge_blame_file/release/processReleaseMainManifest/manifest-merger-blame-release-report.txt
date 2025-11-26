@@ -1,0 +1,101 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.example.leggedsegway.application"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="24"
+9        android:targetSdkVersion="33" />
+10
+11    <uses-permission android:name="android.permission.BLUETOOTH" />
+11-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:5:5-68
+11-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:5:22-65
+12    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+12-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:6:5-74
+12-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:6:22-71
+13    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+13-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:7:5-76
+13-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:7:22-73
+14    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+14-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:8:5-73
+14-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:8:22-70
+15
+16    <permission
+16-->[androidx.core:core:1.9.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/e9bfe2cb2a8113ba415efc68763c78ef/transformed/core-1.9.0/AndroidManifest.xml:22:5-24:47
+17        android:name="com.example.leggedsegway.application.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+17-->[androidx.core:core:1.9.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/e9bfe2cb2a8113ba415efc68763c78ef/transformed/core-1.9.0/AndroidManifest.xml:23:9-81
+18        android:protectionLevel="signature" />
+18-->[androidx.core:core:1.9.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/e9bfe2cb2a8113ba415efc68763c78ef/transformed/core-1.9.0/AndroidManifest.xml:24:9-44
+19
+20    <uses-permission android:name="com.example.leggedsegway.application.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+20-->[androidx.core:core:1.9.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/e9bfe2cb2a8113ba415efc68763c78ef/transformed/core-1.9.0/AndroidManifest.xml:26:5-97
+20-->[androidx.core:core:1.9.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/e9bfe2cb2a8113ba415efc68763c78ef/transformed/core-1.9.0/AndroidManifest.xml:26:22-94
+21
+22    <application
+22-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:10:5-29:19
+23        android:allowBackup="true"
+23-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:11:9-35
+24        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+24-->[androidx.core:core:1.9.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/e9bfe2cb2a8113ba415efc68763c78ef/transformed/core-1.9.0/AndroidManifest.xml:28:18-86
+25        android:dataExtractionRules="@xml/data_extraction_rules"
+25-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:12:9-65
+26        android:extractNativeLibs="false"
+27        android:fullBackupContent="@xml/backup_rules"
+27-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:13:9-54
+28        android:label="@string/app_name"
+28-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:14:9-41
+29        android:supportsRtl="true"
+29-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:15:9-35
+30        android:theme="@style/Theme.Leggedsegway" >
+30-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:16:9-50
+31        <activity
+31-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:18:9-27:20
+32            android:name="com.example.leggedsegway.application.MainActivity"
+32-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:19:13-41
+33            android:exported="true"
+33-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:20:13-36
+34            android:screenOrientation="landscape" >
+34-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:21:13-50
+35            <intent-filter>
+35-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:22:13-26:29
+36                <action android:name="android.intent.action.MAIN" />
+36-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:23:17-69
+36-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:23:25-66
+37
+38                <category android:name="android.intent.category.LAUNCHER" />
+38-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:25:17-77
+38-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:25:27-74
+39            </intent-filter>
+40        </activity>
+41        <activity
+41-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:28:9-90
+42            android:name="com.example.leggedsegway.application.ControlActivity"
+42-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:28:19-50
+43            android:screenOrientation="landscape" />
+43-->/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/src/main/AndroidManifest.xml:28:51-88
+44
+45        <provider
+45-->[androidx.emoji2:emoji2:1.2.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/867014f8c6639a9a68196f0506fd17b8/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:24:9-32:20
+46            android:name="androidx.startup.InitializationProvider"
+46-->[androidx.emoji2:emoji2:1.2.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/867014f8c6639a9a68196f0506fd17b8/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:25:13-67
+47            android:authorities="com.example.leggedsegway.application.androidx-startup"
+47-->[androidx.emoji2:emoji2:1.2.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/867014f8c6639a9a68196f0506fd17b8/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:26:13-68
+48            android:exported="false" >
+48-->[androidx.emoji2:emoji2:1.2.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/867014f8c6639a9a68196f0506fd17b8/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:27:13-37
+49            <meta-data
+49-->[androidx.emoji2:emoji2:1.2.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/867014f8c6639a9a68196f0506fd17b8/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:29:13-31:52
+50                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+50-->[androidx.emoji2:emoji2:1.2.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/867014f8c6639a9a68196f0506fd17b8/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:30:17-75
+51                android:value="androidx.startup" />
+51-->[androidx.emoji2:emoji2:1.2.0] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/867014f8c6639a9a68196f0506fd17b8/transformed/jetified-emoji2-1.2.0/AndroidManifest.xml:31:17-49
+52            <meta-data
+52-->[androidx.lifecycle:lifecycle-process:2.4.1] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/1f27a3c8a3714a0403ecaecdf0c76015/transformed/jetified-lifecycle-process-2.4.1/AndroidManifest.xml:31:13-33:52
+53                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+53-->[androidx.lifecycle:lifecycle-process:2.4.1] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/1f27a3c8a3714a0403ecaecdf0c76015/transformed/jetified-lifecycle-process-2.4.1/AndroidManifest.xml:32:17-78
+54                android:value="androidx.startup" />
+54-->[androidx.lifecycle:lifecycle-process:2.4.1] /Users/an-yeonsu/.gradle/caches/9.0-milestone-1/transforms/1f27a3c8a3714a0403ecaecdf0c76015/transformed/jetified-lifecycle-process-2.4.1/AndroidManifest.xml:33:17-49
+55        </provider>
+56    </application>
+57
+58</manifest>
