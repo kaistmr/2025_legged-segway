@@ -1,0 +1,24 @@
+R_DEF: Internal format may change without notice
+local
+color black
+color purple_200
+color purple_500
+color purple_700
+color teal_200
+color teal_700
+color white
+id button_fold
+id button_imu_reset
+id button_unfold
+id command_view
+id device_list
+id joystick
+layout activity_control
+layout activity_main
+string app_name
+string fold_legs
+string imu_reset
+string unfold_legs
+style Theme.Leggedsegway
+xml backup_rules
+xml data_extraction_rules
