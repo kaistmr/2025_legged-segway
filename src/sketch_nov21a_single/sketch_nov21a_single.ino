@@ -4,6 +4,8 @@
 //  - LK CAN motors in torque mode (iq control)
 //  - MPU6050 DMP (ElectronicCats library) for pitch angle feedback
 //  - Two fixed hip servos: J1 on pin 4 (80°), J2 on pin 5 (120°)
+//  - HC-06 Bluetooth module (Slave mode)
+//    MAC Address: 98:DA:60:08:61:BB
 
 #include <Wire.h>
 #include <Servo.h>
@@ -338,6 +340,74 @@ void recalibrateImuAndResetPid() {
   Serial.println(F("[R] IMU calibration & PID reset done"));
 }
 
+// -------------------- HC-06 AT 명령 전송 및 응답 확인 --------------------
+bool sendATCommandBT(const char* cmd, const char* expectedResponse, int timeout = 1000) {
+  // 버퍼 비우기
+  while (btSerial.available()) {
+    btSerial.read();
+  }
+
+  btSerial.print(cmd);
+  btSerial.print("\r\n");
+
+  delay(100);
+
+  unsigned long startTime = millis();
+  String response = "";
+
+  while (millis() - startTime < timeout) {
+    if (btSerial.available()) {
+      char c = btSerial.read();
+      response += c;
+      if (response.indexOf(expectedResponse) >= 0) {
+        Serial.print(F("  -> OK: "));
+        Serial.println(cmd);
+        return true;
+      }
+    }
+  }
+
+  Serial.print(F("  -> Timeout/No response: "));
+  Serial.println(cmd);
+  if (response.length() > 0) {
+    Serial.print(F("    Response: "));
+    Serial.println(response);
+  }
+  return false;
+}
+
+// -------------------- HC-06 슬레이브 모드 설정 --------------------
+void setupHC06AsSlave() {
+  Serial.println(F("Configuring HC-06 as Slave..."));
+  delay(2000);  // HC-06 초기화 대기
+
+  // AT 명령 테스트
+  Serial.println(F("Testing AT command..."));
+  if (!sendATCommandBT("AT", "OK", 1000)) {
+    Serial.println(F("WARNING: HC-06 not responding to AT commands!"));
+    Serial.println(F("Make sure HC-06 is powered and connected correctly."));
+  }
+
+  // HC-06을 슬레이브 모드로 설정
+  Serial.println(F("Setting to Slave mode..."));
+  sendATCommandBT("AT+ROLE=0", "OK", 1000);
+  delay(500);
+
+  // HC-06 이름 설정
+  Serial.println(F("Setting name to HC06..."));
+  sendATCommandBT("AT+NAME=jalseobot", "OK", 1000);
+  delay(500);
+
+  // MAC 주소 확인
+  Serial.println(F("Getting MAC address..."));
+  sendATCommandBT("AT+ADDR?", "OK", 1000);
+  delay(500);
+
+  Serial.println(F("HC-06 configured as Slave"));
+  Serial.println(F("MAC Address: 98:DA:60:08:61:BB"));
+  Serial.println(F("Waiting for controller connection..."));
+}
+
 
 // -------------------- Setup --------------------
 
@@ -347,6 +417,9 @@ void setup() {
   while (!Serial && millis() < 3000) {
     // wait for USB serial
   }
+
+  // HC-06 슬레이브 모드 설정
+  setupHC06AsSlave();
 
   // I2C for MPU6050
   Wire.begin();
