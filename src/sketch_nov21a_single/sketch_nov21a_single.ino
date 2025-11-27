@@ -93,6 +93,17 @@ unsigned long lastCmdMs = 0;  // 마지막 명령 시간 (블루투스/시리얼
 float err_integral = 0.0f;
 float last_error   = 0.0f;
 
+// -------------------- Cascade Control Variables --------------------
+// Velocity Loop (Outer Loop) - PI controller
+float Speed_Kp = 0.03f;        // Velocity loop proportional gain (reduced for stability)
+float Speed_Ki = 0.005f;       // Velocity loop integral gain (reduced for stability)
+float targetSpeedDps = 0.0f;   // Target speed from motion commands
+float currentSpeedDps = 0.0f;  // Current average speed from motors
+float speed_integral = 0.0f;   // Velocity loop integral term
+
+// Safety limit for pitch angle output from velocity loop (relaxed for better control)
+const float MAX_PITCH_FROM_VELOCITY_DEG = 20.0f;
+
 // -------------------- 통합 명령 처리 (블루투스 + 시리얼) --------------------
 
 void processCommand(char c, bool fromSerial) {
@@ -133,6 +144,8 @@ void processCommand(char c, bool fromSerial) {
       err_integral = 0.0f;
       last_error = 0.0f;
     }
+    // STOP 명령 시 속도 루프 적분기도 리셋 (활동 제동을 위해)
+    speed_integral = 0.0f;
     prevMotionCmd = motionCmd;
     motionCmd = MOTION_STOP;
     if (fromSerial) Serial.println(F("[S] Stop"));
@@ -166,6 +179,8 @@ void safetyUpdateFromTimeout() {
       err_integral = 0.0f;
       last_error = 0.0f;
     }
+    // 타임아웃 시 속도 루프 적분기도 리셋
+    speed_integral = 0.0f;
     prevMotionCmd = motionCmd;
     motionCmd = MOTION_STOP;
   }
@@ -204,14 +219,17 @@ void updateImuDmp() {
   }
 }
 
-// -------------------- Balance Controller (단일 PID) --------------------
+// -------------------- Cascade Balance Controller --------------------
+// Architecture: Velocity Loop (Outer) -> Angle Loop (Inner) -> Torque Output
+// NOTE: Motors operate in TORQUE MODE ONLY (setTorqueIq).
+//       Velocity control is implemented entirely in software on Arduino side.
 
-// PID on pitch angle (deg)
+// PID on pitch angle (deg) - Inner Loop
 const float ZIG_ORIGIN_OFFSET_DEG = -1.29f;   // bias relative to DMP zero (tune)
 float       zigOriginAngleDeg     = ZIG_ORIGIN_OFFSET_DEG;
 const float PITCH_SIGN            = -1.0f;   // 센서 방향 반전하면 여기 바꾸기
 
-// Gains (tune on hardware)
+// Angle Loop PID Gains (tune on hardware)
 float Kp = 40.0f;
 float Ki = 0.5f;
 float Kd = 4.0f;
@@ -228,39 +246,43 @@ const uint32_t CONTROL_PERIOD_US = 5000;  // 5 ms -> 200 Hz
 void disableBalanceControlOutputs() {
   err_integral = 0.0f;
   last_error   = 0.0f;
+  speed_integral = 0.0f;  // Reset velocity loop integral
+  targetSpeedDps = 0.0f;
+  currentSpeedDps = 0.0f;
   motorLeft.setTorqueIq(0);
   motorRight.setTorqueIq(0);
 }
 
-// -------------------- Motion Offsets (이동, 회전) --------------------
-// 이동은 단순히 목표 pitch를 약간 앞/뒤로 기울이는 방식으로만 구현
-void computeMotionOffsets(float &pitchOffsetDeg, int16_t &turnIqOffset) {
-  const float   TILT_DEG  = -1.0f;   // 전진용 추가 기울기
-  const int16_t TURN_IQ       = 30;     // 제자리 회전용 바퀴 토크 차이
+// -------------------- Motion Commands -> Target Speed --------------------
+// Convert motion commands to target speed for Velocity Loop
+// This sets the setpoint for the outer (velocity) control loop
+void computeTargetSpeed(int16_t &turnIqOffset) {
+  const float TARGET_SPEED_FWD_DPS  = 200.0f;   // Forward target speed (deg/s)
+  const float TARGET_SPEED_BACK_DPS = -200.0f;  // Backward target speed (deg/s)
+  const int16_t TURN_IQ = 30;                    // 제자리 회전용 바퀴 토크 차이
 
-  pitchOffsetDeg = 0.0f;
-  turnIqOffset   = 0;
+  turnIqOffset = 0;
 
   switch (motionCmd) {
     case MOTION_STOP:
-      pitchOffsetDeg = 0.0f;
+      targetSpeedDps = 0.0f;  // Active braking: velocity loop will drive to zero
       turnIqOffset   = 0;
       break;
     case MOTION_FWD:
-      pitchOffsetDeg = TILT_DEG;
+      targetSpeedDps = TARGET_SPEED_FWD_DPS;
       turnIqOffset   = 0;
       break;
     case MOTION_BACK:
-      pitchOffsetDeg = -1*TILT_DEG;
+      targetSpeedDps = TARGET_SPEED_BACK_DPS;
       turnIqOffset   = 0;
       break;
     case MOTION_LEFT:
-      pitchOffsetDeg = TILT_DEG / 2;
-      turnIqOffset   = +TURN_IQ;
+      targetSpeedDps = TARGET_SPEED_FWD_DPS / 2;  // Reduced speed for turning
+      turnIqOffset   = -TURN_IQ;  // Fixed: reversed sign for correct direction
       break;
     case MOTION_RIGHT:
-      pitchOffsetDeg = TILT_DEG / 2;
-      turnIqOffset   = -TURN_IQ;
+      targetSpeedDps = TARGET_SPEED_FWD_DPS / 2;  // Reduced speed for turning
+      turnIqOffset   = +TURN_IQ;  // Fixed: reversed sign for correct direction
       break;
   }
 }
@@ -277,19 +299,72 @@ void balanceControlStep(float dt) {
     motorLeft.setTorqueIq(0);
     motorRight.setTorqueIq(0);
     err_integral = 0.0f;
+    speed_integral = 0.0f;  // Reset velocity loop integral on fall
     return;
   }
 
-  // 이동/회전 명령에 따른 오프셋 계산
-  float   cmdPitchOffsetDeg = 0.0f;
-  int16_t cmdTurnIqOffset   = 0;
-  computeMotionOffsets(cmdPitchOffsetDeg, cmdTurnIqOffset);
+  // ==================== STEP 1: Read Actual Motor Speeds ====================
+  // Read speed from motors (in torque mode, speed is still reported)
+  LkMotorState2 stateLeft, stateRight;
+  bool leftOk = motorLeft.readState2(stateLeft);
+  bool rightOk = motorRight.readState2(stateRight);
 
-  // 최종 목표 pitch (zigOrigin 기반)
-  float target = zigOriginAngleDeg + cmdPitchOffsetDeg;
+  if (!leftOk || !rightOk) {
+    // If we can't read speeds, fall back to zero (safety)
+    currentSpeedDps = 0.0f;
+  } else {
+    // Calculate average speed with direction correction
+    // Apply LEFT_DIR and RIGHT_DIR to align motor directions
+    float speedL = (float)stateLeft.speed_dps * LEFT_DIR;
+    float speedR = (float)stateRight.speed_dps * RIGHT_DIR;
+    currentSpeedDps = (speedL + speedR) / 2.0f;
+  }
 
-  // 단일 PID
-  float error = target - pitch;
+  // ==================== STEP 2: Velocity Loop (Outer Loop) ====================
+  // Software-based velocity control (NOT using motor's internal velocity mode)
+  // Input:  (targetSpeedDps - currentSpeedDps)
+  // Output: targetPitchAngle (pitch offset from zigOrigin)
+
+  // Compute target speed from motion commands
+  int16_t cmdTurnIqOffset = 0;
+  computeTargetSpeed(cmdTurnIqOffset);
+
+  // Velocity PI controller: Error = TargetSpeed - CurrentSpeed
+  float speed_error = targetSpeedDps - currentSpeedDps;
+
+  // When stopped, disable velocity loop to maintain stable standing
+  // Only use velocity loop when there's an actual motion command
+  float pitchOffsetFromVelocity = 0.0f;
+
+  if (motionCmd != MOTION_STOP) {
+    speed_integral += speed_error * dt;
+
+    // Integral clamping (prevent windup)
+    const float SPEED_I_LIMIT = 50.0f;
+    speed_integral = constrain(speed_integral, -SPEED_I_LIMIT, SPEED_I_LIMIT);
+
+    // PI output = target pitch angle offset (relative to zigOrigin)
+    pitchOffsetFromVelocity = Speed_Kp * speed_error + Speed_Ki * speed_integral;
+
+    // Constrain pitch offset to safe range (relative to zigOrigin)
+    pitchOffsetFromVelocity = constrain(pitchOffsetFromVelocity,
+                                        -MAX_PITCH_FROM_VELOCITY_DEG,
+                                        MAX_PITCH_FROM_VELOCITY_DEG);
+  } else {
+    // When stopped, reset velocity loop integral for clean standing
+    speed_integral = 0.0f;
+  }
+
+  // ==================== STEP 3: Angle Loop (Inner Loop) ====================
+  // Input:  imuPitchDeg (current pitch angle)
+  // Setpoint: zigOrigin + pitchOffsetFromVelocity (from velocity loop)
+  // Output: iq_cmd (torque current command)
+
+  // Final target pitch = zigOrigin + velocity loop output
+  float targetPitch = zigOriginAngleDeg + pitchOffsetFromVelocity;
+
+  // Angle PID controller
+  float error = targetPitch - pitch;
   float derr  = (error - last_error) / dt;
 
   err_integral += error * dt;
@@ -299,19 +374,23 @@ void balanceControlStep(float dt) {
 
   int16_t iq_cmd = (int16_t)roundf(u);
 
-  // 회전용 토크 오프셋 적용
+  // ==================== STEP 4: Actuation (Torque Mode) ====================
+  // Apply turning offsets (differential torque for rotation)
   int32_t iq_left_raw  = iq_cmd + cmdTurnIqOffset;
   int32_t iq_right_raw = iq_cmd - cmdTurnIqOffset;
 
+  // Clamp to torque limits
   if (iq_left_raw > IQ_MAX) iq_left_raw = IQ_MAX;
   if (iq_left_raw < IQ_MIN) iq_left_raw = IQ_MIN;
 
   if (iq_right_raw > IQ_MAX) iq_right_raw = IQ_MAX;
   if (iq_right_raw < IQ_MIN) iq_right_raw = IQ_MIN;
 
+  // Apply motor direction correction
   int16_t iq_left  = LEFT_DIR  * (int16_t)iq_left_raw;
   int16_t iq_right = RIGHT_DIR * (int16_t)iq_right_raw;
 
+  // Send torque commands to motors (TORQUE MODE ONLY - no setSpeed() used)
   motorLeft.setTorqueIq(iq_left);
   motorRight.setTorqueIq(iq_right);
 
@@ -336,6 +415,9 @@ void recalibrateImuAndResetPid() {
   // PID 상태도 리셋
   err_integral = 0.0f;
   last_error   = 0.0f;
+  speed_integral = 0.0f;  // Velocity loop integral also reset
+  targetSpeedDps = 0.0f;
+  currentSpeedDps = 0.0f;
 
   Serial.println(F("[R] IMU calibration & PID reset done"));
 }
@@ -483,6 +565,9 @@ void setup() {
 
   err_integral = 0.0f;
   last_error   = 0.0f;
+  speed_integral = 0.0f;
+  targetSpeedDps = 0.0f;
+  currentSpeedDps = 0.0f;
 }
 
 // -------------------- Loop --------------------
@@ -523,7 +608,11 @@ void loop() {
     Serial.print(imuPitchDeg, 2);
     Serial.print(F(" deg  target="));
     Serial.print(zigOriginAngleDeg, 2);
-    Serial.print(F(" deg  cmd="));
+    Serial.print(F(" deg  speed="));
+    Serial.print(currentSpeedDps, 1);
+    Serial.print(F(" dps  targetSpeed="));
+    Serial.print(targetSpeedDps, 1);
+    Serial.print(F(" dps  cmd="));
     switch (motionCmd) {
       case MOTION_STOP:  Serial.print("S"); break;
       case MOTION_FWD:   Serial.print("F"); break;
