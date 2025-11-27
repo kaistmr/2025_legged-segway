@@ -235,7 +235,7 @@ void disableBalanceControlOutputs() {
 // -------------------- Motion Offsets (이동, 회전) --------------------
 // 이동은 단순히 목표 pitch를 약간 앞/뒤로 기울이는 방식으로만 구현
 void computeMotionOffsets(float &pitchOffsetDeg, int16_t &turnIqOffset) {
-  const float   TILT_DEG  = -2.5f;   // 전진용 추가 기울기
+  const float   TILT_DEG  = -1.0f;   // 전진용 추가 기울기
   const int16_t TURN_IQ       = 30;     // 제자리 회전용 바퀴 토크 차이
 
   pitchOffsetDeg = 0.0f;
