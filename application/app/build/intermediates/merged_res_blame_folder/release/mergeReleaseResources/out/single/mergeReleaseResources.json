@@ -1,0 +1,18 @@
+[
+    {
+        "merged": "com.example.leggedsegway.application.app-release-28:/xml_backup_rules.xml.flat",
+        "source": "com.example.leggedsegway.application.app-main-29:/xml/backup_rules.xml"
+    },
+    {
+        "merged": "com.example.leggedsegway.application.app-release-28:/xml_data_extraction_rules.xml.flat",
+        "source": "com.example.leggedsegway.application.app-main-29:/xml/data_extraction_rules.xml"
+    },
+    {
+        "merged": "com.example.leggedsegway.application.app-release-28:/layout_activity_main.xml.flat",
+        "source": "com.example.leggedsegway.application.app-main-29:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.example.leggedsegway.application.app-release-28:/layout_activity_control.xml.flat",
+        "source": "com.example.leggedsegway.application.app-main-29:/layout/activity_control.xml"
+    }
+]

@@ -1,0 +1,4 @@
+#Thu Nov 27 00:08:48 KST 2025
+base.0=/Users/an-yeonsu/Documents/GitHub/2025_legged-segway/application/app/build/intermediates/dex/release/mergeDexRelease/classes.dex
+renamed.0=classes.dex
+path.0=classes.dex

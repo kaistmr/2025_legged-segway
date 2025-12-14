@@ -1,0 +1,22 @@
+[
+    {
+        "merged": "com.example.leggedsegway.application.app-debug-28:/layout_activity_control.xml.flat",
+        "source": "com.example.leggedsegway.application.app-main-30:/layout/activity_control.xml"
+    },
+    {
+        "merged": "/Users/an-yeonsu/.gradle/daemon/9.0-milestone-1/com.example.leggedsegway.application.app-debug-28:/layout_activity_control.xml.flat",
+        "source": "/Users/an-yeonsu/.gradle/daemon/9.0-milestone-1/com.example.leggedsegway.application.app-main-30:/layout/activity_control.xml"
+    },
+    {
+        "merged": "/Users/an-yeonsu/.gradle/daemon/9.0-milestone-1/com.example.leggedsegway.application.app-debug-28:/xml_backup_rules.xml.flat",
+        "source": "/Users/an-yeonsu/.gradle/daemon/9.0-milestone-1/com.example.leggedsegway.application.app-main-30:/xml/backup_rules.xml"
+    },
+    {
+        "merged": "/Users/an-yeonsu/.gradle/daemon/9.0-milestone-1/com.example.leggedsegway.application.app-debug-28:/layout_activity_main.xml.flat",
+        "source": "/Users/an-yeonsu/.gradle/daemon/9.0-milestone-1/com.example.leggedsegway.application.app-main-30:/layout/activity_main.xml"
+    },
+    {
+        "merged": "/Users/an-yeonsu/.gradle/daemon/9.0-milestone-1/com.example.leggedsegway.application.app-debug-28:/xml_data_extraction_rules.xml.flat",
+        "source": "/Users/an-yeonsu/.gradle/daemon/9.0-milestone-1/com.example.leggedsegway.application.app-main-30:/xml/data_extraction_rules.xml"
+    }
+]

@@ -4,12 +4,19 @@
 //  - LK CAN motors in torque mode (iq control)
 //  - MPU6050 DMP (ElectronicCats library) for pitch angle feedback
 //  - Two fixed hip servos: J1 on pin 4 (80°), J2 on pin 5 (120°)
+//  - HC-06 Bluetooth module (Slave mode)
+//    MAC Address: 98:DA:60:08:61:BB
 
 #include <Wire.h>
 #include <Servo.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"   // from ElectronicCats/mpu6050
 #include "LkMotor.h"                      // LK CAN driver
+
+enum ServoPose : uint8_t {
+  SERVO_POSE_FOLDED = 0,
+  SERVO_POSE_STAND  = 1,
+};
 
 // -------------------- CAN / Motors --------------------
 
@@ -37,10 +44,30 @@ Servo servoJ2;  // right hip
 const int SERVO_J1_PIN = 4;  // J1
 const int SERVO_J2_PIN = 5;  // J2
 
-const int H_INIT = 60;       // base hip angle
+const int H_STAND_DEG  = 60;   // original upright pose
+const int H_FOLDED_DEG = 0;   // folded pose (tune as needed)
 
-inline int J1ang(int a) { return a + 30; }    // left: a + 20
+inline int J1ang(int a) { return a + 30; }    // left: a + offset
 inline int J2ang(int a) { return 180 - a; }   // right: 180 - a
+
+ServoPose currentServoPose = SERVO_POSE_FOLDED;
+bool balanceEnabled = false;
+
+void disableBalanceControlOutputs();
+
+void setServoPose(ServoPose pose) {
+  int baseAngle = (pose == SERVO_POSE_STAND) ? H_STAND_DEG : H_FOLDED_DEG;
+  servoJ1.write(J1ang(baseAngle));
+  servoJ2.write(J2ang(baseAngle));
+  currentServoPose = pose;
+
+  if (pose == SERVO_POSE_STAND) {
+    balanceEnabled = true;
+  } else {
+    balanceEnabled = false;
+    disableBalanceControlOutputs();
+  }
+}
 
 // -------------------- HC-06 Bluetooth module --------------------
 static const uint8_t BT_RX = 7;  // (HC-06 TXD)
@@ -58,37 +85,103 @@ enum MotionCmd {
 };
 
 volatile MotionCmd motionCmd = MOTION_STOP;  // 기본은 정지(S)
+volatile MotionCmd prevMotionCmd = MOTION_STOP;  // 이전 명령 추적
 
-unsigned long lastBtCmdMs = 0;
+unsigned long lastCmdMs = 0;  // 마지막 명령 시간 (블루투스/시리얼 통합)
 
-// Serial에서 'f' 눌렀을 때 2초 전진용
-bool serialForwardActive = false;
-unsigned long serialForwardStartMs = 0;
+// PID 상태 변수 (전역 선언 - 명령 처리에서 사용)
+float err_integral = 0.0f;
+float last_error   = 0.0f;
 
-void pollBtCommand() {
+// -------------------- Cascade Control Variables --------------------
+// Velocity Loop (Outer Loop) - PI controller
+float Speed_Kp = 0.03f;        // Velocity loop proportional gain (reduced for stability)
+float Speed_Ki = 0.005f;       // Velocity loop integral gain (reduced for stability)
+float targetSpeedDps = 0.0f;   // Target speed from motion commands
+float currentSpeedDps = 0.0f;  // Current average speed from motors
+float speed_integral = 0.0f;   // Velocity loop integral term
+
+// Safety limit for pitch angle output from velocity loop (relaxed for better control)
+const float MAX_PITCH_FROM_VELOCITY_DEG = 20.0f;
+
+// -------------------- 통합 명령 처리 (블루투스 + 시리얼) --------------------
+
+void processCommand(char c, bool fromSerial) {
+  lastCmdMs = millis();  // 명령 시간 기록
+
+  if (c == 'U' || c == 'u') {
+    setServoPose(SERVO_POSE_STAND);
+    if (fromSerial) Serial.println(F("[U] Hip servos -> stand pose"));
+  }
+  else if (c == 'D' || c == 'd') {
+    setServoPose(SERVO_POSE_FOLDED);
+    if (fromSerial) Serial.println(F("[D] Hip servos -> folded pose"));
+  }
+  else if (c == 'F' || c == 'f') {
+    prevMotionCmd = motionCmd;
+    motionCmd = MOTION_FWD;
+    if (fromSerial) Serial.println(F("[F] Forward"));
+  }
+  else if (c == 'B' || c == 'b') {
+    prevMotionCmd = motionCmd;
+    motionCmd = MOTION_BACK;
+    if (fromSerial) Serial.println(F("[B] Backward"));
+  }
+  else if (c == 'L' || c == 'l') {
+    prevMotionCmd = motionCmd;
+    motionCmd = MOTION_LEFT;
+    if (fromSerial) Serial.println(F("[L] Turn left"));
+  }
+  else if (c == 'R' || c == 'r') {
+    // R/r: 우회전
+    prevMotionCmd = motionCmd;
+    motionCmd = MOTION_RIGHT;
+    if (fromSerial) Serial.println(F("[R] Turn right"));
+  }
+  else if (c == 'S' || c == 's') {
+    // 회전 명령에서 STOP으로 바뀔 때 PID 리셋
+    if (prevMotionCmd == MOTION_LEFT || prevMotionCmd == MOTION_RIGHT) {
+      err_integral = 0.0f;
+      last_error = 0.0f;
+    }
+    // STOP 명령 시 속도 루프 적분기도 리셋 (활동 제동을 위해)
+    speed_integral = 0.0f;
+    prevMotionCmd = motionCmd;
+    motionCmd = MOTION_STOP;
+    if (fromSerial) Serial.println(F("[S] Stop"));
+  }
+  else if (c == '0') {
+    // 0: IMU 캘리브레이션 (블루투스/시리얼 모두)
+    recalibrateImuAndResetPid();
+  }
+}
+
+void pollAllCommands() {
+  // 블루투스 명령 처리
   while (btSerial.available()) {
     char c = btSerial.read();
-    lastBtCmdMs = millis();
+    processCommand(c, false);
+  }
 
-    switch (c) {
-      case 'S': motionCmd = MOTION_STOP;  break;
-      case 'F': motionCmd = MOTION_FWD;   break;
-      case 'B': motionCmd = MOTION_BACK;  break;
-      case 'L': motionCmd = MOTION_LEFT;  break;
-      case 'R': motionCmd = MOTION_RIGHT; break;
-      default:  break; // 기타 문자는 무시
-    }
-
-    // BT로 조작 시작하면 Serial 기반 2초 전진은 취소
-    serialForwardActive = false;
+  // 시리얼 명령 처리
+  while (Serial.available()) {
+    char c = Serial.read();
+    processCommand(c, true);
   }
 }
 
 void safetyUpdateFromTimeout() {
-  const unsigned long TIMEOUT_MS = 800; // 0.8초 동안 BT 명령 없으면 정지
+  const unsigned long TIMEOUT_MS = 400; // 0.4초 동안 명령 없으면 정지
 
-  // BT를 한 번이라도 사용했을 때만 타임아웃 적용
-  if (lastBtCmdMs != 0 && millis() - lastBtCmdMs > TIMEOUT_MS) {
+  if (lastCmdMs != 0 && millis() - lastCmdMs > TIMEOUT_MS) {
+    // 회전 명령에서 타임아웃으로 STOP으로 바뀔 때 PID 리셋
+    if (motionCmd == MOTION_LEFT || motionCmd == MOTION_RIGHT) {
+      err_integral = 0.0f;
+      last_error = 0.0f;
+    }
+    // 타임아웃 시 속도 루프 적분기도 리셋
+    speed_integral = 0.0f;
+    prevMotionCmd = motionCmd;
     motionCmd = MOTION_STOP;
   }
 }
@@ -126,13 +219,17 @@ void updateImuDmp() {
   }
 }
 
-// -------------------- Balance Controller (단일 PID) --------------------
+// -------------------- Cascade Balance Controller --------------------
+// Architecture: Velocity Loop (Outer) -> Angle Loop (Inner) -> Torque Output
+// NOTE: Motors operate in TORQUE MODE ONLY (setTorqueIq).
+//       Velocity control is implemented entirely in software on Arduino side.
 
-// PID on pitch angle (deg)
-const float PITCH_TARGET_DEG = -0.0f;   // upright
-const float PITCH_SIGN       = -1.0f;   // 센서 방향 반전하면 여기 바꾸기
+// PID on pitch angle (deg) - Inner Loop
+const float ZIG_ORIGIN_OFFSET_DEG = -1.29f;   // bias relative to DMP zero (tune)
+float       zigOriginAngleDeg     = ZIG_ORIGIN_OFFSET_DEG;
+const float PITCH_SIGN            = -1.0f;   // 센서 방향 반전하면 여기 바꾸기
 
-// Gains (tune on hardware)
+// Angle Loop PID Gains (tune on hardware)
 float Kp = 40.0f;
 float Ki = 0.5f;
 float Kd = 4.0f;
@@ -146,45 +243,55 @@ const float I_LIMIT = 50.0f;
 // Control timing (Hz)
 const uint32_t CONTROL_PERIOD_US = 5000;  // 5 ms -> 200 Hz
 
-float err_integral = 0.0f;
-float last_error   = 0.0f;
+void disableBalanceControlOutputs() {
+  err_integral = 0.0f;
+  last_error   = 0.0f;
+  speed_integral = 0.0f;  // Reset velocity loop integral
+  targetSpeedDps = 0.0f;
+  currentSpeedDps = 0.0f;
+  motorLeft.setTorqueIq(0);
+  motorRight.setTorqueIq(0);
+}
 
-// -------------------- Motion Offsets (이동, 회전) --------------------
-// 이동은 단순히 목표 pitch를 약간 앞/뒤로 기울이는 방식으로만 구현
-void computeMotionOffsets(float &pitchOffsetDeg, int16_t &turnIqOffset) {
-  const float   FWD_TILT_DEG  = 3.0f;   // 전진용 추가 기울기
-  const float   BACK_TILT_DEG = -3.0f;  // 후진용 추가 기울기
-  const int16_t TURN_IQ       = 80;     // 제자리 회전용 바퀴 토크 차이
+// -------------------- Motion Commands -> Target Speed --------------------
+// Convert motion commands to target speed for Velocity Loop
+// This sets the setpoint for the outer (velocity) control loop
+void computeTargetSpeed(int16_t &turnIqOffset) {
+  const float TARGET_SPEED_FWD_DPS  = 200.0f;   // Forward target speed (deg/s)
+  const float TARGET_SPEED_BACK_DPS = -200.0f;  // Backward target speed (deg/s)
+  const int16_t TURN_IQ = 30;                    // 제자리 회전용 바퀴 토크 차이
 
-  pitchOffsetDeg = 0.0f;
-  turnIqOffset   = 0;
+  turnIqOffset = 0;
 
   switch (motionCmd) {
     case MOTION_STOP:
-      pitchOffsetDeg = 0.0f;
+      targetSpeedDps = 0.0f;  // Active braking: velocity loop will drive to zero
       turnIqOffset   = 0;
       break;
     case MOTION_FWD:
-      pitchOffsetDeg = FWD_TILT_DEG;
+      targetSpeedDps = TARGET_SPEED_FWD_DPS;
       turnIqOffset   = 0;
       break;
     case MOTION_BACK:
-      pitchOffsetDeg = BACK_TILT_DEG;
+      targetSpeedDps = TARGET_SPEED_BACK_DPS;
       turnIqOffset   = 0;
       break;
     case MOTION_LEFT:
-      pitchOffsetDeg = 0.0f;
-      turnIqOffset   = +TURN_IQ;
+      targetSpeedDps = TARGET_SPEED_FWD_DPS / 2;  // Reduced speed for turning
+      turnIqOffset   = -TURN_IQ;  // Fixed: reversed sign for correct direction
       break;
     case MOTION_RIGHT:
-      pitchOffsetDeg = 0.0f;
-      turnIqOffset   = -TURN_IQ;
+      targetSpeedDps = TARGET_SPEED_FWD_DPS / 2;  // Reduced speed for turning
+      turnIqOffset   = +TURN_IQ;  // Fixed: reversed sign for correct direction
       break;
   }
 }
 
 void balanceControlStep(float dt) {
-  if (!dmpReady) return;
+  if (!dmpReady || !balanceEnabled) {
+    disableBalanceControlOutputs();
+    return;
+  }
 
   float pitch = imuPitchDeg * PITCH_SIGN;
 
@@ -192,19 +299,72 @@ void balanceControlStep(float dt) {
     motorLeft.setTorqueIq(0);
     motorRight.setTorqueIq(0);
     err_integral = 0.0f;
+    speed_integral = 0.0f;  // Reset velocity loop integral on fall
     return;
   }
 
-  // 이동/회전 명령에 따른 오프셋 계산
-  float   cmdPitchOffsetDeg = 0.0f;
-  int16_t cmdTurnIqOffset   = 0;
-  computeMotionOffsets(cmdPitchOffsetDeg, cmdTurnIqOffset);
+  // ==================== STEP 1: Read Actual Motor Speeds ====================
+  // Read speed from motors (in torque mode, speed is still reported)
+  LkMotorState2 stateLeft, stateRight;
+  bool leftOk = motorLeft.readState2(stateLeft);
+  bool rightOk = motorRight.readState2(stateRight);
 
-  // 최종 목표 pitch
-  float target = PITCH_TARGET_DEG + cmdPitchOffsetDeg;
+  if (!leftOk || !rightOk) {
+    // If we can't read speeds, fall back to zero (safety)
+    currentSpeedDps = 0.0f;
+  } else {
+    // Calculate average speed with direction correction
+    // Apply LEFT_DIR and RIGHT_DIR to align motor directions
+    float speedL = (float)stateLeft.speed_dps * LEFT_DIR;
+    float speedR = (float)stateRight.speed_dps * RIGHT_DIR;
+    currentSpeedDps = (speedL + speedR) / 2.0f;
+  }
 
-  // 단일 PID
-  float error = target - pitch;
+  // ==================== STEP 2: Velocity Loop (Outer Loop) ====================
+  // Software-based velocity control (NOT using motor's internal velocity mode)
+  // Input:  (targetSpeedDps - currentSpeedDps)
+  // Output: targetPitchAngle (pitch offset from zigOrigin)
+
+  // Compute target speed from motion commands
+  int16_t cmdTurnIqOffset = 0;
+  computeTargetSpeed(cmdTurnIqOffset);
+
+  // Velocity PI controller: Error = TargetSpeed - CurrentSpeed
+  float speed_error = targetSpeedDps - currentSpeedDps;
+
+  // When stopped, disable velocity loop to maintain stable standing
+  // Only use velocity loop when there's an actual motion command
+  float pitchOffsetFromVelocity = 0.0f;
+
+  if (motionCmd != MOTION_STOP) {
+    speed_integral += speed_error * dt;
+
+    // Integral clamping (prevent windup)
+    const float SPEED_I_LIMIT = 50.0f;
+    speed_integral = constrain(speed_integral, -SPEED_I_LIMIT, SPEED_I_LIMIT);
+
+    // PI output = target pitch angle offset (relative to zigOrigin)
+    pitchOffsetFromVelocity = Speed_Kp * speed_error + Speed_Ki * speed_integral;
+
+    // Constrain pitch offset to safe range (relative to zigOrigin)
+    pitchOffsetFromVelocity = constrain(pitchOffsetFromVelocity,
+                                        -MAX_PITCH_FROM_VELOCITY_DEG,
+                                        MAX_PITCH_FROM_VELOCITY_DEG);
+  } else {
+    // When stopped, reset velocity loop integral for clean standing
+    speed_integral = 0.0f;
+  }
+
+  // ==================== STEP 3: Angle Loop (Inner Loop) ====================
+  // Input:  imuPitchDeg (current pitch angle)
+  // Setpoint: zigOrigin + pitchOffsetFromVelocity (from velocity loop)
+  // Output: iq_cmd (torque current command)
+
+  // Final target pitch = zigOrigin + velocity loop output
+  float targetPitch = zigOriginAngleDeg + pitchOffsetFromVelocity;
+
+  // Angle PID controller
+  float error = targetPitch - pitch;
   float derr  = (error - last_error) / dt;
 
   err_integral += error * dt;
@@ -214,19 +374,23 @@ void balanceControlStep(float dt) {
 
   int16_t iq_cmd = (int16_t)roundf(u);
 
-  // 회전용 토크 오프셋 적용
+  // ==================== STEP 4: Actuation (Torque Mode) ====================
+  // Apply turning offsets (differential torque for rotation)
   int32_t iq_left_raw  = iq_cmd + cmdTurnIqOffset;
   int32_t iq_right_raw = iq_cmd - cmdTurnIqOffset;
 
+  // Clamp to torque limits
   if (iq_left_raw > IQ_MAX) iq_left_raw = IQ_MAX;
   if (iq_left_raw < IQ_MIN) iq_left_raw = IQ_MIN;
 
   if (iq_right_raw > IQ_MAX) iq_right_raw = IQ_MAX;
   if (iq_right_raw < IQ_MIN) iq_right_raw = IQ_MIN;
 
+  // Apply motor direction correction
   int16_t iq_left  = LEFT_DIR  * (int16_t)iq_left_raw;
   int16_t iq_right = RIGHT_DIR * (int16_t)iq_right_raw;
 
+  // Send torque commands to motors (TORQUE MODE ONLY - no setSpeed() used)
   motorLeft.setTorqueIq(iq_left);
   motorRight.setTorqueIq(iq_right);
 
@@ -251,33 +415,81 @@ void recalibrateImuAndResetPid() {
   // PID 상태도 리셋
   err_integral = 0.0f;
   last_error   = 0.0f;
+  speed_integral = 0.0f;  // Velocity loop integral also reset
+  targetSpeedDps = 0.0f;
+  currentSpeedDps = 0.0f;
 
   Serial.println(F("[R] IMU calibration & PID reset done"));
 }
 
-// -------------------- Serial 명령 (H: PID 리셋, f: 2초 전진) --------------------
+// -------------------- HC-06 AT 명령 전송 및 응답 확인 --------------------
+bool sendATCommandBT(const char* cmd, const char* expectedResponse, int timeout = 1000) {
+  // 버퍼 비우기
+  while (btSerial.available()) {
+    btSerial.read();
+  }
 
-void pollSerialCommand() {
-  while (Serial.available()) {
-    char c = Serial.read();
+  btSerial.print(cmd);
+  btSerial.print("\r\n");
 
-    if (c == 'H' || c == 'h') {
-      // PID 상태만 리셋 (엔코더 없음)
-      err_integral = 0.0f;
-      last_error   = 0.0f;
-      Serial.println(F("[H] PID state reset"));
-    }
-    else if (c == 'f' || c == 'F') {
-      serialForwardActive  = true;
-      serialForwardStartMs = millis();
-      motionCmd            = MOTION_FWD;
-      Serial.println(F("[f] 2s forward command started"));
-    }
-    else if (c == 'r' || c == 'R') {
-      recalibrateImuAndResetPid();
+  delay(100);
+
+  unsigned long startTime = millis();
+  String response = "";
+
+  while (millis() - startTime < timeout) {
+    if (btSerial.available()) {
+      char c = btSerial.read();
+      response += c;
+      if (response.indexOf(expectedResponse) >= 0) {
+        Serial.print(F("  -> OK: "));
+        Serial.println(cmd);
+        return true;
+      }
     }
   }
+
+  Serial.print(F("  -> Timeout/No response: "));
+  Serial.println(cmd);
+  if (response.length() > 0) {
+    Serial.print(F("    Response: "));
+    Serial.println(response);
+  }
+  return false;
 }
+
+// -------------------- HC-06 슬레이브 모드 설정 --------------------
+void setupHC06AsSlave() {
+  Serial.println(F("Configuring HC-06 as Slave..."));
+  delay(2000);  // HC-06 초기화 대기
+
+  // AT 명령 테스트
+  Serial.println(F("Testing AT command..."));
+  if (!sendATCommandBT("AT", "OK", 1000)) {
+    Serial.println(F("WARNING: HC-06 not responding to AT commands!"));
+    Serial.println(F("Make sure HC-06 is powered and connected correctly."));
+  }
+
+  // HC-06을 슬레이브 모드로 설정
+  Serial.println(F("Setting to Slave mode..."));
+  sendATCommandBT("AT+ROLE=0", "OK", 1000);
+  delay(500);
+
+  // HC-06 이름 설정
+  Serial.println(F("Setting name to HC06..."));
+  sendATCommandBT("AT+NAME=jalseobot", "OK", 1000);
+  delay(500);
+
+  // MAC 주소 확인
+  Serial.println(F("Getting MAC address..."));
+  sendATCommandBT("AT+ADDR?", "OK", 1000);
+  delay(500);
+
+  Serial.println(F("HC-06 configured as Slave"));
+  Serial.println(F("MAC Address: 98:DA:60:08:61:BB"));
+  Serial.println(F("Waiting for controller connection..."));
+}
+
 
 // -------------------- Setup --------------------
 
@@ -287,6 +499,9 @@ void setup() {
   while (!Serial && millis() < 3000) {
     // wait for USB serial
   }
+
+  // HC-06 슬레이브 모드 설정
+  setupHC06AsSlave();
 
   // I2C for MPU6050
   Wire.begin();
@@ -342,33 +557,24 @@ void setup() {
   motorLeft.motorStop();
   motorRight.motorStop();
 
-  // Hip servos fixed pose
+  // Hip servos start folded; later can command stand via serial 'U'
   servoJ1.attach(SERVO_J1_PIN);
   servoJ2.attach(SERVO_J2_PIN);
 
-  servoJ1.write(J1ang(H_INIT));   // left: 80°
-  servoJ2.write(J2ang(H_INIT));   // right: 120°
+  setServoPose(SERVO_POSE_FOLDED);
 
   err_integral = 0.0f;
   last_error   = 0.0f;
+  speed_integral = 0.0f;
+  targetSpeedDps = 0.0f;
+  currentSpeedDps = 0.0f;
 }
 
 // -------------------- Loop --------------------
 
 void loop() {
-  pollBtCommand();
-  pollSerialCommand();
+  pollAllCommands();
   safetyUpdateFromTimeout();
-
-  // Serial 'f' 2초 타이머
-  if (serialForwardActive) {
-    unsigned long elapsed = millis() - serialForwardStartMs;
-    if (elapsed >= 2000) {            // 2초 경과
-      serialForwardActive = false;
-      motionCmd = MOTION_STOP;
-      Serial.println(F("[f] 2s forward finished"));
-    }
-  }
 
   updateImuDmp();
 
@@ -392,7 +598,7 @@ void loop() {
     }
   }
 
-  // Debug print
+  // Debug print (100ms 주기)
   static uint32_t lastPrintMs = 0;
   uint32_t nowMs = millis();
   if (nowMs - lastPrintMs >= 100) {
@@ -400,7 +606,13 @@ void loop() {
 
     Serial.print(F("pitch="));
     Serial.print(imuPitchDeg, 2);
-    Serial.print(F("  cmd="));
+    Serial.print(F(" deg  target="));
+    Serial.print(zigOriginAngleDeg, 2);
+    Serial.print(F(" deg  speed="));
+    Serial.print(currentSpeedDps, 1);
+    Serial.print(F(" dps  targetSpeed="));
+    Serial.print(targetSpeedDps, 1);
+    Serial.print(F(" dps  cmd="));
     switch (motionCmd) {
       case MOTION_STOP:  Serial.print("S"); break;
       case MOTION_FWD:   Serial.print("F"); break;
@@ -408,6 +620,8 @@ void loop() {
       case MOTION_LEFT:  Serial.print("L"); break;
       case MOTION_RIGHT: Serial.print("R"); break;
     }
+    Serial.print(F("  balance="));
+    Serial.print(balanceEnabled ? "ON" : "OFF");
     Serial.println();
   }
 }

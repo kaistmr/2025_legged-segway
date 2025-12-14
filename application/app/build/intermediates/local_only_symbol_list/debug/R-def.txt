@@ -1,0 +1,20 @@
+R_DEF: Internal format may change without notice
+local
+color black
+color purple_200
+color purple_500
+color purple_700
+color teal_200
+color teal_700
+color white
+id button1
+id button2
+id button3
+id command_view
+id device_list
+id joystick_left
+id joystick_right
+layout activity_control
+layout activity_main
+string app_name
+style Theme.Leggedsegway
